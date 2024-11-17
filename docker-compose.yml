@@ -1,0 +1,13 @@
+# docker-compose.yml -- docker-compose configuration file for rdancer/rdancer-comfyi-worker
+
+version: '3.7'
+
+services:
+  rdancer-comfyi-worker:
+    image: rdancer/rdancer-comfyi-worker:1.0.6
+    container_name: rdancer-comfyi-worker
+    environment:
+      - COMFYI_API_URL=https://comfyi-api.example.com
+      - COMFYI_API_TOKEN=your-api-token
+      - COMFYI_API_SECRET=your-api-secret
+    restart: always
