@@ -6,14 +6,18 @@ These are minimal changes on top of https://github.com/blib-la/runpod-worker-com
 
 The main point of this image is to be able to work with a single network volume attached at /workspace, both from a pod and from a serverless worker.
 
+Currently this is a work in progress, and requires quite a few manual steps.
+
 1. Create network volume
 2. Deploy the network volume with the [AI-Dock template](https://www.runpod.io/console/explore/57we0zdwtt)
   - remember to attach the network volume you have created in (1)
 3. Run the template with the default settings, and wait for the installation to be over
   - verify that ComfyUI is working, by running the default workflow
   - save the default workflow in API mode `workflow_api.json`
-4. Connect via web shell, and
-  - `cp -r "$COMFYUI_VENV" /workspace/ComfyUI/venv`
+4. Connect via web shell, and:
+  - `pip freeze > reqs.txt; deactivate; python3 -m venv /workspace/ComfyUI/venv; . /workspace/ComfyUI/venv/bin/activate; pip install -r reqs.txt`
+  - If install fails, you may need to do: `pip install torch==2.4.1+cu121 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121` or somesuch
+  - `mkdir -p  /workspace/environments/python && ln -s /workspace/ComfyUI/venv /workspace/environments/python/comfyui`
 5. Edit the pod and change Environmental Variables
   - delete PROVISIONING_SCRIPT
   - add new variables:
