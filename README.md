@@ -18,7 +18,7 @@ The main point of this image is to be able to work with a single network volume 
   - delete PROVISIONING_SCRIPT
   - add new variables:
     - WORKSPACE = /workspace
-    - COMFYUI_VENV = /workspace/ComfyUI/venv *[isn't this set automatically by setting WORKSPACE?]*
+    - COMFYUI_VENV = /workspace/ComfyUI/venv
   - change WEB_USER and WEB_PASSWORD to something secure
   - it is strongly recommended that at this point, you create a copy of the template with these modified settings
   - when you save the settings, the pod will restart
