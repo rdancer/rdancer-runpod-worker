@@ -7,8 +7,8 @@ These are minimal changes on top of https://github.com/blib-la/runpod-worker-com
 The main point of this image is to be able to work with a single network volume attached at /workspace, both from a pod and from a serverless worker.
 
 1. Create network volume
-2. Deploy the network volume with the AI-Dock template
-  - opt to select a template, and use the search box to search for AI-Dock
+2. Deploy the network volume with the [AI-Dock template](https://www.runpod.io/console/explore/57we0zdwtt)
+  - remember to attach the network volume you have created in (1)
 3. Run the template with the default settings, and wait for the installation to be over
   - verify that ComfyUI is working, by running the default workflow
   - save the default workflow in API mode `workflow_api.json`
