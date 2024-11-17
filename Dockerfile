@@ -12,7 +12,8 @@ RUN chmod 700 /root/.ssh
 COPY id_rsa.pub /root/.ssh/authorized_keys
 RUN chmod 600 /root/.ssh/authorized_keys
 
-COPY start.sh /
+# Modified files from the original repo
+COPY start.sh rp_handler.py /
 RUN chmod +x /start.sh
 
 CMD ["/start.sh"]

@@ -10,13 +10,13 @@ import base64
 from io import BytesIO
 
 # Time to wait between API check attempts in milliseconds
-COMFY_API_AVAILABLE_INTERVAL_MS = 50
+COMFY_API_AVAILABLE_INTERVAL_MS = int(os.environ.get("COMFY_API_AVAILABLE_INTERVAL_MS", 500))
 # Maximum number of API check attempts
-COMFY_API_AVAILABLE_MAX_RETRIES = 500
+COMFY_API_AVAILABLE_MAX_RETRIES = int(os.environ.get("COMFY_API_AVAILABLE_MAX_RETRIES", 120))
 # Time to wait between poll attempts in milliseconds
-COMFY_POLLING_INTERVAL_MS = int(os.environ.get("COMFY_POLLING_INTERVAL_MS", 250))
+COMFY_POLLING_INTERVAL_MS = int(os.environ.get("COMFY_POLLING_INTERVAL_MS", 500))
 # Maximum number of poll attempts
-COMFY_POLLING_MAX_RETRIES = int(os.environ.get("COMFY_POLLING_MAX_RETRIES", 500))
+COMFY_POLLING_MAX_RETRIES = int(os.environ.get("COMFY_POLLING_MAX_RETRIES", 250))
 # Host where ComfyUI is running
 COMFY_HOST = "127.0.0.1:8188"
 # Enforce a clean state after each job is done
@@ -66,14 +66,14 @@ def validate_input(job_input):
     return {"workflow": workflow, "images": images}, None
 
 
-def check_server(url, retries=500, delay=50):
+def check_server(url, retries=COMFY_API_AVAILABLE_MAX_RETRIES, delay=COMFY_API_AVAILABLE_INTERVAL_MS):
     """
     Check if a server is reachable via HTTP GET request
 
     Args:
     - url (str): The URL to check
-    - retries (int, optional): The number of times to attempt connecting to the server. Default is 50
-    - delay (int, optional): The time in milliseconds to wait between retries. Default is 500
+    - retries (int, optional): The number of times to attempt connecting to the server. Default is configurable via the COMFY_API_AVAILABLE_MAX_RETRIES environment variable
+    - delay (int, optional): The time in milliseconds to wait between retries. Default is configurable via the COMFY_API_AVAILABLE_INTERVAL_MS environment variable
 
     Returns:
     bool: True if the server is reachable within the given number of retries, otherwise False
@@ -95,7 +95,7 @@ def check_server(url, retries=500, delay=50):
         time.sleep(delay / 1000)
 
     print(
-        f"runpod-worker-comfy - Failed to connect to server at {url} after {retries} attempts."
+        f"runpod-worker-comfy - Failed to connect to server at {url} after {retries * delay / 1000:.1f} seconds."
     )
     return False
 
