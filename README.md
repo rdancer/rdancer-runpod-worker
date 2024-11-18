@@ -37,3 +37,22 @@ Currently this is a work in progress, and requires quite a few manual steps.
 
 
 _At this point, workflows prepared in the interactive ComfyUI interface can be processed by the serverless instance._
+
+## Timeout variables
+
+If you use too high values, your jobs will be hanging and you will be paying for crashed workers. On the other hand, values that are too low will result in all working trying to execute jobs in a loop and timing half way through every time. Sensible values depend on your particular situation.
+
+`COMFY_API_AVAILABLE_INTERVAL_MS`: Time (ms) between API availability checks. Default: 500.
+
+`COMFY_API_AVAILABLE_MAX_RETRIES`: Max API check attempts. Default: 86400.
+
+`COMFY_POLLING_INTERVAL_MS`: Time (ms) between polling attempts. Default: 1000.
+
+`COMFY_POLLING_MAX_RETRIES`: Max polling attempts. Default: 86400.
+
+
+The defaults are geared towards the "Execution Timeout" in Edit Endpoint being used exclusively for timeout control.
+
+
+
+
