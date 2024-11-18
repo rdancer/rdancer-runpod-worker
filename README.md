@@ -54,5 +54,51 @@ If you use too high values, your jobs will be hanging and you will be paying for
 The defaults are geared towards the "Execution Timeout" in Edit Endpoint being used exclusively for timeout control.
 
 
+## Input schema
+
+POST this to https://api.runpod.ai/v2/{{SLS_ENDPOINT_ID}}/run
+
+```json
+{
+  "input": {
+      "workflow": <workflow_api.json>,
+      "images": [
+        {
+          "name": "foo.png", // only PNG is supported by rp_handler.py at the moment
+          "image": <base64 encoded PNG image>
+        },
+        ...
+      ]
+  }
+}
+```
+
+## Output schema
+
+It is perfectly fine to operate the API in a fire-and-forget mode. Runpod will keep trying to process the jobs until it succeeds. You can monitor the job queue on the endpoint's page, and once the job completes, the output images will be permanently saved to /workspace/ComfyUI/output.
+
+Please refer to https://docs.runpod.io/docs/api-reference/run-endpoint for more information on monitoring the job queue and individual job status.
+
+A successfully *completed* job will return a JSON object like this:
+
+```json
+{
+  "delayTime": 100,
+  "executionTime": 64701,
+  "id": "sync-6821b6c3-47c1-49cc-8d46-23c15e36f671-e1",
+  "output": {
+    "status": "success", // or "error"
+    "images": [
+      {
+        "name": "test_00001_.png",
+        "image": "iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAIAAAB7..."
+      }
+    ]
+  },
+  "status": "COMPLETED",
+  "workerId": "2exm06mm3m8sm1"
+}
+```
+
 
 
