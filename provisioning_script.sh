@@ -38,7 +38,7 @@ which pip
 
 if [ -n "${UPSTREAM_PROVISIONING_SCRIPT:-}" ]; then
     echo "Running \$UPSTREAM_PROVISIONING_SCRIPT: $UPSTREAM_PROVISIONING_SCRIPT..."
-    curl "$UPSTREAM_PROVISIONING_SCRIPT" | bash
+    curl -sSL "$UPSTREAM_PROVISIONING_SCRIPT" | bash
 else
     echo "\$UPSTREAM_PROVISIONING_SCRIPT not set, finishing up."
 fi
