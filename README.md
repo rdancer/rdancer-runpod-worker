@@ -11,29 +11,28 @@ Currently this is a work in progress, and requires quite a few manual steps.
 1. Create network volume
   - on the pod, this will be always attached to /workspace
   - on the serverless instance, this will be always attached to /runpod-volume (ideally we would want this to be consistent, but unfortunately this is not configurable)
-3. Deploy the network volume with the [AI-Dock template](https://www.runpod.io/console/explore/57we0zdwtt)
+2. Deploy the network volume with the [AI-Dock template](https://www.runpod.io/console/explore/57we0zdwtt)
   - remember to attach the network volume you have created in (1)
   - edit the template and change/add *Environment Variables*:
     - WORKSPACE = /workspace
     - COMFYUI_VENV = /workspace/environments/python/comfyui
-    - PYTHONPATH = /workspace/environments/python/comfyui/lib/python3.10/site-packages:/opt/environments/python/comfyui/lib/python3.10/site-packages:/opt/environments/python/python_310/lib/python3.10/site-packages
     - rename PROVISIONING_SCRIPT to UPSTREAM_PROVISIONING_SCRIPT
     - PROVISIONING_SCRIPT = https://raw.githubusercontent.com/rdancer/runpod-worker-comfy-actual/master/provisioning_script.sh
+    - (optionally) change WEB_USER and WEB_PASSWORD to something secure
 3. Run the modified template, and wait for the installation to be over
   - verify that ComfyUI is working, by running the default workflow
   - save the default workflow in API mode `workflow_api.json` -- we will use this to test the serverless endpoint later
-5. Having verified that the Pod works, edit the pod and change *Environmental Variables*:
+4. Having verified that the Pod works, edit the pod and change *Environmental Variables*:
   - delete PROVISIONING_SCRIPT and UPSTREAM_PROVISIONING_SCRIPT
-  - change WEB_USER and WEB_PASSWORD to something secure
   - it is strongly recommended that at this point, you create a copy of the template with these modified settings
   - when you save the settings, the pod will restart
-6. Create a new serverless endpoint
+5. Create a new serverless endpoint
   - container image: rdancer/rdancer-comfyui-worker:latest (this repository)
   - Container Disk: 20GB
   - Environmental Variables:
     - COMFYUI_OUTPUT_PATH = /workspace/ComfyUI/output
   - Attach the network volume created in (1) above
-7. Run the serverless endpoint
+6. Run the serverless endpoint
   - verify everything is working by running the `workflow_api.json` saved in (3) above
 
 
