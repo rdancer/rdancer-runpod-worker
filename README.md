@@ -21,13 +21,13 @@ Currently this is a work in progress, and requires quite a few manual steps.
     - Note: there is a bug in the upstream Docker image that means $PROVISIONING_SCRIPT is being ignored (although it is specified in the template, so I'm not sure what's going on). Work-around:
       - run the template normally
       - after install has finished, connect via web terminal, and run: `curl -sSL https://raw.githubusercontent.com/rdancer/runpod-worker-comfy-actual/master/provisioning_script.sh | bash`
+      - only then set COMFYUI_VENV = /workspace/environments/python/comfyui (this will reboot the instance)
     - (optionally) change WEB_USER and WEB_PASSWORD to something secure
 3. Run the modified template, and wait for the installation to be over
   - verify that ComfyUI is working, by running the default workflow
   - save the default workflow in API mode `workflow_api.json` -- we will use this to test the serverless endpoint later
 4. Having verified that the Pod works, edit the pod and change *Environmental Variables*:
   - delete PROVISIONING_SCRIPT and UPSTREAM_PROVISIONING_SCRIPT
-  - COMFYUI_VENV = /workspace/environments/python/comfyui
   - it is strongly recommended that at this point, you create a copy of the template with these modified settings
   - when you save the settings, the pod will restart
 5. Create a new serverless endpoint
