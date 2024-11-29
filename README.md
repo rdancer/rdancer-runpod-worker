@@ -16,8 +16,11 @@ Currently this is a work in progress, and requires quite a few manual steps.
   - edit the template and change/add *Environment Variables*:
     - WORKSPACE = /workspace
     - COMFYUI_VENV = /workspace/environments/python/comfyui
-    - rename PROVISIONING_SCRIPT to UPSTREAM_PROVISIONING_SCRIPT
-    - PROVISIONING_SCRIPT = https://raw.githubusercontent.com/rdancer/runpod-worker-comfy-actual/master/provisioning_script.sh
+    - ~rename PROVISIONING_SCRIPT to UPSTREAM_PROVISIONING_SCRIPT~
+    - ~PROVISIONING_SCRIPT = https://raw.githubusercontent.com/rdancer/runpod-worker-comfy-actual/master/provisioning_script.sh~
+    - Note: there is a bug in the upstream Docker image that means $PROVISIONING_SCRIPT is being ignored (although it is specified in the template, so I'm not sure what's going on). Work-around:
+      - run the template normally
+      - after install has finished, connect via web terminal, and run: `curl -sSL https://raw.githubusercontent.com/rdancer/runpod-worker-comfy-actual/master/provisioning_script.sh | bash`
     - (optionally) change WEB_USER and WEB_PASSWORD to something secure
 3. Run the modified template, and wait for the installation to be over
   - verify that ComfyUI is working, by running the default workflow
