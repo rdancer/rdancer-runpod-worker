@@ -46,7 +46,8 @@ _At this point, workflows prepared in the interactive ComfyUI interface can be p
 
 ### A1111 Web-UI with Deforum
 
-1. Extra variables:
+1. [RunPod template](https://www.runpod.io/console/explore/f1ohaqcrbo)
+2. Extra variables:
  - add the following to the WEBUI_ARGS: --api --deforum-api
   - instead of COMFYUI_ENV, use WEBUI_VENV = /workspace/environments/python/webui
 
