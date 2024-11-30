@@ -43,6 +43,15 @@ Currently this is a work in progress, and requires quite a few manual steps.
 
 _At this point, workflows prepared in the interactive ComfyUI interface can be processed by the serverless instance._
 
+
+### A1111 Web-UI with Deforum
+
+1. Extra variables:
+ - add the following to the WEBUI_ARGS: --api --deforum-api
+  - instead of COMFYUI_ENV, use WEBUI_VENV = /workspace/environments/python/webui
+
+
+
 ## Timeout variables
 
 If you use too high values, your jobs will be hanging and you will be paying for crashed workers. On the other hand, values that are too low will result in all working trying to execute jobs in a loop and timing half way through every time. Sensible values depend on your particular situation.
