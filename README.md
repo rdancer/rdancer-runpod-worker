@@ -30,6 +30,7 @@ Currently this is a work in progress, and requires quite a few manual steps.
   - delete PROVISIONING_SCRIPT and UPSTREAM_PROVISIONING_SCRIPT
   - it is strongly recommended that at this point, you create a copy of the template with these modified settings
   - when you save the settings, the pod will restart
+4. Optionally [disable *Storage Monitor*](https://github.com/rdancer/runpod-worker-comfy-actual/blob/master/provisioning/run.sh) (instructions in source code)
 5. Create a new serverless endpoint
   - container image: rdancer/rdancer-comfyui-worker:latest (this repository)
   - Container Disk: 20GB
