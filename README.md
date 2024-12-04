@@ -1,19 +1,24 @@
-# Docker image `rdancer/runpod-worker-comfy`
+# Docker images `rdancer/runpod-worker-comfy`, `rdancer/runpod-worker-deforum`
 
-These are minimal changes on top of https://github.com/blib-la/runpod-worker-comfy to make this work nice with my Runpod images. Tested with modified AI-Dock, but as long as ComfyUI is installed in /workspace/ComfyUI, with venv in /workspace/ComfyUI/venv, this image should work.
+*Note: each worker image has its own branch in this repo, named same as the DockerHub name, i.e. `rdancer/runpod-worker-comfy` and `rdancer/runpod-worker-deforum`.*
 
-## AI-Dock instructions
+These are minimal changes on top of https://github.com/blib-la/runpod-worker-comfy to make this work nice with my Runpod images.
+
+We will set up a Pod (server) and a serverless worker. They both share the same network volume. The instructions below have been tested with modified AI-Dock, but as long as ComfyUI is installed in /workspace/ComfyUI, with venv in /workspace/ComfyUI/venv (and analogously for A1111), this image should work.
+
+### RunPod Pod
 
 The main point of this image is to be able to work with a single network volume attached at /workspace, both from a pod and from a serverless worker.
 
-Currently this is a work in progress, and requires quite a few manual steps.
+Currently this is a work in progress, and requires quite a few manual steps. Once you have verified that everything works, you should be able to save your setup as a template.
 
 1. Create network volume
   - on the pod, this will be always attached to /workspace
   - on the serverless instance, this will be always attached to /runpod-volume (ideally we would want this to be consistent, but unfortunately this is not configurable)
-2. Deploy the network volume with the [AI-Dock template](https://www.runpod.io/console/explore/57we0zdwtt)
+2. Deploy the network volume with the AI-Dock [ComfyUI template](https://www.runpod.io/console/explore/57we0zdwtt) or [A1111 Web-UI with Deforum template](https://www.runpod.io/console/explore/f1ohaqcrbo)
   - remember to attach the network volume you have created in (1)
   - edit the template and change/add *Environment Variables*:
+  - ComfyUI:
     - WORKSPACE = /workspace
     - ~COMFYUI_VENV = /workspace/environments/python/comfyui~
     - ~rename PROVISIONING_SCRIPT to UPSTREAM_PROVISIONING_SCRIPT~
@@ -23,6 +28,10 @@ Currently this is a work in progress, and requires quite a few manual steps.
       - after install has finished, connect via web terminal, and run: `curl -sSL https://raw.githubusercontent.com/rdancer/runpod-worker-comfy-actual/master/provisioning_script.sh | bash`
       - only then set COMFYUI_VENV = /workspace/environments/python/comfyui (this will reboot the instance)
     - (optionally) change WEB_USER and WEB_PASSWORD to something secure
+  - Deforum:
+    - Same as above, but:
+     - add the following to the WEBUI_ARGS: --api --deforum-api
+      - instead of COMFYUI_ENV, use WEBUI_VENV = /workspace/environments/python/webui
 3. Run the modified template, and wait for the installation to be over
   - verify that ComfyUI is working, by running the default workflow
   - save the default workflow in API mode `workflow_api.json` -- we will use this to test the serverless endpoint later
@@ -43,15 +52,9 @@ Currently this is a work in progress, and requires quite a few manual steps.
 _At this point, workflows prepared in the interactive ComfyUI interface can be processed by the serverless instance._
 
 
-### A1111 Web-UI with Deforum
-
-1. [RunPod template](https://www.runpod.io/console/explore/f1ohaqcrbo)
-2. Extra variables:
- - add the following to the WEBUI_ARGS: --api --deforum-api
-  - instead of COMFYUI_ENV, use WEBUI_VENV = /workspace/environments/python/webui
-
-
 ## Timeout variables
+
+### ComfyUI
 
 If you use too high values, your jobs will be hanging and you will be paying for crashed workers. On the other hand, values that are too low will result in all working trying to execute jobs in a loop and timing half way through every time. Sensible values depend on your particular situation.
 
@@ -71,6 +74,8 @@ The defaults are geared towards the "Execution Timeout" in Edit Endpoint being u
 
 POST this to https://api.runpod.ai/v2/{{SLS_ENDPOINT_ID}}/run
 
+### ComfyUI
+
 ```json
 {
   "input": {
@@ -86,7 +91,17 @@ POST this to https://api.runpod.ai/v2/{{SLS_ENDPOINT_ID}}/run
 }
 ```
 
+### Deforum
+
+```json
+{
+    // TODO
+}
+```
+
 ## Output schema
+
+### ComfyUI
 
 It is perfectly fine to operate the API in a fire-and-forget mode. Runpod will keep trying to process the jobs until it succeeds. You can monitor the job queue on the endpoint's page, and once the job completes, the output images will be permanently saved to /workspace/ComfyUI/output.
 
@@ -113,5 +128,12 @@ A successfully *completed* job will return a JSON object like this:
 }
 ```
 
+### Deforum
+
+```json
+{
+    // TODO
+}
+```
 
 
