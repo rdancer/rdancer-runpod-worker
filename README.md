@@ -37,6 +37,8 @@ Currently this is a work in progress, and requires quite a few manual steps. Onc
   - save the default workflow in API mode `workflow_api.json` -- we will use this to test the serverless endpoint later
 4. Having verified that the Pod works, edit the pod and change *Environmental Variables*:
   - delete PROVISIONING_SCRIPT and UPSTREAM_PROVISIONING_SCRIPT
+  - disable services that you do not need by setting this variable to any of the following (comma-separated list):
+    - SUPERVISOR_NO_AUTOSTART = caddy,cloudflared,jupyter,quicktunnel,serviceportal,sshd,syncthing
   - it is strongly recommended that at this point, you create a copy of the template with these modified settings
   - when you save the settings, the pod will restart
 5. Create a new serverless endpoint
@@ -51,10 +53,11 @@ Currently this is a work in progress, and requires quite a few manual steps. Onc
 
 _At this point, workflows prepared in the interactive ComfyUI interface can be processed by the serverless instance._
 
+## RunPod Serverless Worker
 
-## Timeout variables
+### Timeout variables
 
-### ComfyUI
+#### ComfyUI
 
 If you use too high values, your jobs will be hanging and you will be paying for crashed workers. On the other hand, values that are too low will result in all working trying to execute jobs in a loop and timing half way through every time. Sensible values depend on your particular situation.
 
@@ -70,11 +73,11 @@ If you use too high values, your jobs will be hanging and you will be paying for
 The defaults are geared towards the "Execution Timeout" in Edit Endpoint being used exclusively for timeout control.
 
 
-## Input schema
+### Input schema
 
 POST this to https://api.runpod.ai/v2/{{SLS_ENDPOINT_ID}}/run
 
-### ComfyUI
+#### ComfyUI
 
 ```json
 {
@@ -91,7 +94,7 @@ POST this to https://api.runpod.ai/v2/{{SLS_ENDPOINT_ID}}/run
 }
 ```
 
-### Deforum
+#### Deforum
 
 ```json
 {
@@ -99,9 +102,9 @@ POST this to https://api.runpod.ai/v2/{{SLS_ENDPOINT_ID}}/run
 }
 ```
 
-## Output schema
+### Output schema
 
-### ComfyUI
+#### ComfyUI
 
 It is perfectly fine to operate the API in a fire-and-forget mode. Runpod will keep trying to process the jobs until it succeeds. You can monitor the job queue on the endpoint's page, and once the job completes, the output images will be permanently saved to /workspace/ComfyUI/output.
 
@@ -128,7 +131,7 @@ A successfully *completed* job will return a JSON object like this:
 }
 ```
 
-### Deforum
+#### Deforum
 
 ```json
 {
