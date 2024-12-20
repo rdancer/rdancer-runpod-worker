@@ -8,17 +8,45 @@ import os
 import requests
 import base64
 from io import BytesIO
+import glob
+import traceback
+
+
+
+SERVICE_TYPE = os.environ.get("DOCKER_IMAGE_TYPE", "comfyui").lower().strip()
+worker_name = f"runpod-worker-{SERVICE_TYPE}"
+
+if os.getenv("DEBUG", False):
+    print(f"{worker_name} - DEBUG is enabled")
+    import debugpy
+    debugpy.listen(("0.0.0.0", 5678))
+    print(f"{worker_name} - Debugger listening on port 5678, connect now.")
+    import time
+    wait_time = 10
+    for i in range(wait_time):
+        print(f"{worker_name} - Waiting for debugger to attach ({wait_time-i: 3d})...")
+        time.sleep(1)
+        if debugpy.is_client_connected():
+            print(f"{worker_name} - Debugger attached, proceeding.")
+            break
+    else:
+        print(f"{worker_name} - Debugger failed to attach, proceeding.")
+
+assert SERVICE_TYPE in ("comfyui", "deforum"), f"Internal error -- unknown service type: {SERVICE_TYPE}"
 
 # Time to wait between API check attempts in milliseconds
-COMFY_API_AVAILABLE_INTERVAL_MS = int(os.environ.get("COMFY_API_AVAILABLE_INTERVAL_MS", 500))
+SERVER_API_AVAILABLE_INTERVAL_MS = int(os.environ.get("COMFY_API_AVAILABLE_INTERVAL_MS", 500))
 # Maximum number of API check attempts
-COMFY_API_AVAILABLE_MAX_RETRIES = int(os.environ.get("COMFY_API_AVAILABLE_MAX_RETRIES", 86400))
+SERVER_API_AVAILABLE_MAX_RETRIES = int(os.environ.get("COMFY_API_AVAILABLE_MAX_RETRIES", 86400))
 # Time to wait between poll attempts in milliseconds
-COMFY_POLLING_INTERVAL_MS = int(os.environ.get("COMFY_POLLING_INTERVAL_MS", 1000))
+SERVER_POLLING_INTERVAL_MS = int(os.environ.get("COMFY_POLLING_INTERVAL_MS", 1000))
 # Maximum number of poll attempts
-COMFY_POLLING_MAX_RETRIES = int(os.environ.get("COMFY_POLLING_MAX_RETRIES", 86400)) # 24 hours -- handle timeouts using the worker timeout instead
-# Host where ComfyUI is running
-COMFY_HOST = "127.0.0.1:8188"
+SERVER_POLLING_MAX_RETRIES = int(os.environ.get("COMFY_POLLING_MAX_RETRIES", 86400)) # 24 hours -- handle timeouts using the worker timeout instead
+# Host where the server is running
+SERVER_HOST = {
+    "comfyui": os.environ.get("COMFY_HOST", "127.0.0.1:8188"),
+    "deforum": os.environ.get("WEBUI_HOST", "127.0.0.1:17860"),
+}[SERVICE_TYPE]
 # Enforce a clean state after each job is done
 # see https://docs.runpod.io/docs/handler-additional-controls#refresh-worker
 REFRESH_WORKER = os.environ.get("REFRESH_WORKER", "false").lower() == "true"
@@ -66,7 +94,7 @@ def validate_input(job_input):
     return {"workflow": workflow, "images": images}, None
 
 
-def check_server(url, retries=COMFY_API_AVAILABLE_MAX_RETRIES, delay=COMFY_API_AVAILABLE_INTERVAL_MS):
+def check_server(url, retries=SERVER_API_AVAILABLE_MAX_RETRIES, delay=SERVER_API_AVAILABLE_INTERVAL_MS):
     """
     Check if a server is reachable via HTTP GET request
 
@@ -79,13 +107,18 @@ def check_server(url, retries=COMFY_API_AVAILABLE_MAX_RETRIES, delay=COMFY_API_A
     bool: True if the server is reachable within the given number of retries, otherwise False
     """
 
+    print(f"{worker_name} - Checking server at {url}")
+    if os.getenv("DEBUG_NO_CHECK_SERVER", False):
+        print(f"{worker_name} - Will skip server check because DEBUG_NO_CHECK_SERVER is enabled")
+        return True
+
     for i in range(retries):
         try:
             response = requests.get(url)
 
             # If the response status code is 200, the server is up and running
             if response.status_code == 200:
-                print(f"runpod-worker-comfy - API is reachable")
+                print(f"{worker_name} - API is reachable")
                 return True
         except requests.RequestException as e:
             # If an exception occurs, the server may not be ready
@@ -95,10 +128,31 @@ def check_server(url, retries=COMFY_API_AVAILABLE_MAX_RETRIES, delay=COMFY_API_A
         time.sleep(delay / 1000)
 
     print(
-        f"runpod-worker-comfy - Failed to connect to server at {url} after {retries * delay / 1000:.1f} seconds."
+        f"{worker_name} - Failed to connect to server at {url} after {retries * delay / 1000:.1f} seconds."
     )
     return False
 
+
+def guess_mime_type(file_name: str = None):
+    """
+    Guess the MIME type of an image based on its file extension.
+    """
+    try:
+        extension = file_name.lower().split(".")[-1]
+        mime_type = {
+            "png":  "image/png",
+            "jpg":  "image/jpeg",
+            "jpeg": "image/jpeg",
+            "webp": "image/webp",
+            "gif":  "image/gif",
+            "mp4":  "video/mp4",
+            "webm": "video/webm",
+            "txt":  "text/plain",
+            "json": "application/json",
+        }[extension.lower()]
+    except:
+        mime_type = "application/octet-stream"
+    return mime_type
 
 def upload_images(images):
     """
@@ -117,35 +171,38 @@ def upload_images(images):
     responses = []
     upload_errors = []
 
-    print(f"runpod-worker-comfy - image(s) upload")
+    print(f"{worker_name} - image(s) upload")
 
     for image in images:
-        name = image["name"]
+        name = image["name"].split("/")[-1]
+        if "\\" in name:
+            print(f"{worker_name} - Warning: image name contains a backslash, maybe a Windows path?: {name}")
         image_data = image["image"]
         blob = base64.b64decode(image_data)
+        mime_type = guess_mime_type(name)
 
         # Prepare the form data
         files = {
-            "image": (name, BytesIO(blob), "image/png"),
+            "image": (name, BytesIO(blob), mime_type),
             "overwrite": (None, "true"),
         }
 
         # POST request to upload the image
-        response = requests.post(f"http://{COMFY_HOST}/upload/image", files=files)
+        response = requests.post(f"http://{SERVER_HOST}/upload/image", files=files)
         if response.status_code != 200:
             upload_errors.append(f"Error uploading {name}: {response.text}")
         else:
             responses.append(f"Successfully uploaded {name}")
 
     if upload_errors:
-        print(f"runpod-worker-comfy - image(s) upload with errors")
+        print(f"{worker_name} - image(s) upload with errors")
         return {
             "status": "error",
             "message": "Some images failed to upload",
             "details": upload_errors,
         }
 
-    print(f"runpod-worker-comfy - image(s) upload complete")
+    print(f"{worker_name} - image(s) upload complete")
     return {
         "status": "success",
         "message": "All images uploaded successfully",
@@ -164,14 +221,31 @@ def queue_workflow(workflow):
         dict: The JSON response from ComfyUI after processing the workflow
     """
 
-    # The top level element "prompt" is required by ComfyUI
-    data = json.dumps({"prompt": workflow}).encode("utf-8")
+    if SERVICE_TYPE == "comfyui":
+        # The top level element "prompt" is required by ComfyUI
+        data = json.dumps({"prompt": workflow}).encode("utf-8")
+        api_url = f"http://{SERVER_HOST}/prompt"
+    elif SERVICE_TYPE == "deforum":
+        data = json.dumps(workflow).encode("utf-8")
+        api_url = f"http://{SERVER_HOST}/deforum_api/batches"
+    else:
+        raise ValueError("Invalid SERVICE_TYPE")
+    req = urllib.request.Request(api_url, data=data)
+    req.add_header("Content-Type", "application/json")
+    try:
+        res = urllib.request.urlopen(req)
+        return json.loads(res.read())
+    except urllib.error.HTTPError as e:
+        return {"error": str(e), "error_response": e.read().decode('utf-8'), "response": res.read() if 'res' in locals() else None, "workflow": workflow, "api_url": api_url}
 
-    req = urllib.request.Request(f"http://{COMFY_HOST}/prompt", data=data)
-    return json.loads(urllib.request.urlopen(req).read())
+def get_deforum_job_status(job_id):
+    """
+    Get the status of a Deform job using its ID
+    """
+    with urllib.request.urlopen(f"http://{SERVER_HOST}/deforum_api/jobs/{job_id}") as response:
+        return json.loads(response.read())
 
-
-def get_history(prompt_id):
+def get_comfyui_history(job_id):
     """
     Retrieve the history of a given prompt using its ID
 
@@ -181,7 +255,7 @@ def get_history(prompt_id):
     Returns:
         dict: The history of the prompt, containing all the processing steps and results
     """
-    with urllib.request.urlopen(f"http://{COMFY_HOST}/history/{prompt_id}") as response:
+    with urllib.request.urlopen(f"http://{SERVER_HOST}/history/{job_id}") as response:
         return json.loads(response.read())
 
 
@@ -210,6 +284,8 @@ def process_output_images(outputs, job_id):
     Args:
         outputs (dict): A dictionary containing the outputs from image generation,
                         typically includes node IDs and their respective output data.
+                        (for comfyui)
+        outputs (str): Absolute file path of the directory which contains the generated images & videos. (for deforum)
         job_id (str): The unique identifier for the job.
 
     Returns:
@@ -229,21 +305,33 @@ def process_output_images(outputs, job_id):
       with a message indicating the missing image file.
     """
 
-    # The path where ComfyUI stores the generated images
-    COMFY_OUTPUT_PATH = os.environ.get("COMFY_OUTPUT_PATH", "/comfyui/output")
+    if SERVICE_TYPE == "comfyui":
+        # The path where ComfyUI stores the generated images
+        OUTPUT_PATH = os.environ.get("COMFY_OUTPUT_PATH") or os.environ.get("WEBUI_OUTPUT_PATH") or "/comfyui/output"
 
-    output_images = []
+        output_images = []
+        all_outputs = {}
 
-    for node_id, node_output in outputs.items():
-        if "images" in node_output:
-            for image in node_output["images"]:
-                output_images.append(os.path.join(COMFY_OUTPUT_PATH, image["subfolder"], image["filename"]))
+        for node_id, node_output in outputs.items():
+            if "images" in node_output:
+                for image in node_output["images"]:
+                    output_images.append(os.path.join(OUTPUT_PATH, image["subfolder"], image["filename"]))
+            if "gifs" in node_output:
+                for video in node_output["gifs"]:
+                    output_images.append(os.path.join(OUTPUT_PATH, video["subfolder"], video["filename"]))
+            if node_output:
+                all_outputs[node_id] = node_output
+                    
+    elif SERVICE_TYPE == "deforum":
+        # the basename looks like "/runpod-volume/stable-diffusion-webui/outputs/img2img-images/Deforum_20241204213940"
+        # so we have to do the equivalent of "/runpod-volume/stable-diffusion-webui/outputs/img2img-images/Deforum_20241204213940"* to get all the images' paths
+        output_images = [f for f in glob.glob(f"{outputs}/*") if os.path.isfile(f)]
 
-    print(f"runpod-worker-comfy - image generation is done")
+    print(f"{worker_name} - image generation is done")
 
     encoded_output_images = []
     for local_image_path in output_images:
-        print(f"runpod-worker-comfy - {local_image_path}")
+        print(f"{worker_name} - {local_image_path}")
 
         # The image is in the output folder
         if os.path.exists(local_image_path):
@@ -252,7 +340,7 @@ def process_output_images(outputs, job_id):
                 # URL to image in AWS S3
                 image = rp_upload.upload_image(job_id, local_image_path)
                 print(
-                    f"runpod-worker-comfy - the image {base_name} was generated and uploaded to AWS S3"
+                    f"{worker_name} - the image {base_name} was generated and uploaded to AWS S3"
                 )
             else:
                 # base64 image
@@ -261,24 +349,30 @@ def process_output_images(outputs, job_id):
                     "image": base64_encode(local_image_path)
                 })
                 print(
-                    f"runpod-worker-comfy - the image {base_name} was generated and converted to base64"
+                    f"{worker_name} - the image {base_name} was generated and converted to base64"
                 )
     if encoded_output_images:
-        print(f"runpod-worker-comfy - Success: sending image{'s' if len(encoded_output_images)>1 else ''}: {[f['name'] for f in encoded_output_images]}")
-        return {
+        print(f"{worker_name} - Success: sending image{'s' if len(encoded_output_images)>1 else ''}: {[f['name'] for f in encoded_output_images]}")
+        ret = {
             "status": "success",
             "images": encoded_output_images,
         }
+        if "all_outputs" in locals():
+            ret["outputs"] = all_outputs
+        return ret
     else:
         if output_images:
             message = f"Images generated, but none exist in the output folder: {output_images}"
         else:
             message = "No images were generated"
-        print(f"runpod-worker-comfy - {message}")
-        return {
+        print(f"{worker_name} - {message}")
+        ret = {
             "status": "error",
-            "message": message,
+            "error": message,
         }
+        if "all_outputs" in locals():
+            ret["outputs"] = all_outputs
+        return ret
 
 
 def handler(job):
@@ -294,65 +388,91 @@ def handler(job):
     Returns:
         dict: A dictionary containing either an error message or a success status with generated images.
     """
-    job_input = job["input"]
-
-    # Make sure that the input is valid
-    validated_data, error_message = validate_input(job_input)
-    if error_message:
-        return {"error": error_message}
-
-    # Extract validated data
-    workflow = validated_data["workflow"]
-    images = validated_data.get("images")
-
-    # Make sure that the ComfyUI API is available
-    check_server(
-        f"http://{COMFY_HOST}",
-        COMFY_API_AVAILABLE_MAX_RETRIES,
-        COMFY_API_AVAILABLE_INTERVAL_MS,
-    )
-
-    # Upload images if they exist
-    upload_result = upload_images(images)
-
-    if upload_result["status"] == "error":
-        return upload_result
-
-    # Queue the workflow
     try:
-        queued_workflow = queue_workflow(workflow)
-        prompt_id = queued_workflow["prompt_id"]
-        print(f"runpod-worker-comfy - queued workflow with ID {prompt_id}")
-    except Exception as e:
-        return {"error": f"Error queuing workflow: {str(e)}"}
+        job_input = job["input"]
 
-    # Poll for completion
-    print(f"runpod-worker-comfy - wait until image generation is complete")
-    retries = 0
-    try:
-        while retries < COMFY_POLLING_MAX_RETRIES:
-            history = get_history(prompt_id)
+        # Make sure that the input is valid
+        validated_data, error_message = validate_input(job_input)
+        if error_message:
+            return {"error": error_message}
 
-            # Exit the loop if we have found the history
-            if prompt_id in history and history[prompt_id].get("outputs"):
-                break
-            else:
+        # Extract validated data
+        workflow = validated_data["workflow"]
+        images = validated_data.get("images")
+
+        # Make sure that the ComfyUI API is available
+        check_server(
+            f"http://{SERVER_HOST}",
+            SERVER_API_AVAILABLE_MAX_RETRIES,
+            SERVER_API_AVAILABLE_INTERVAL_MS,
+        )
+
+        # Upload images if they exist
+        upload_result = upload_images(images)
+
+        if upload_result["status"] == "error":
+            return upload_result
+
+        # Queue the workflow
+        queued_workflow = None
+        try:
+            queued_workflow = queue_workflow(workflow)
+            if SERVICE_TYPE == "comfyui":
+                job_id = queued_workflow["prompt_id"]
+            elif SERVICE_TYPE == "deforum":
+                job_id = queued_workflow["job_ids"][0]
+            print(f"{worker_name} - queued workflow with ID {job_id}")
+        except Exception as e:
+            traceback_str = traceback.format_exc()
+            return {"error": f"Error queuing workflow -- {e.__class__.__name__}: {str(e)}", "traceback": traceback_str, "workflow": workflow, "queued_workflow": queued_workflow}
+
+        # Poll for completion
+        print(f"{worker_name} - wait until image generation is complete")
+        retries = 0
+        images_result = {}
+        try:
+            while retries < SERVER_POLLING_MAX_RETRIES:
+                if SERVICE_TYPE == "comfyui":
+                    history = get_comfyui_history(job_id)
+
+                    # Exit the loop if we have found the history or encountered an error
+                    if job_id in history and history[job_id].get("outputs"):
+                        images_result = process_output_images(history[job_id].get("outputs"), job_id)
+                        break
+                    else:
+                        try:
+                            if history[job_id]["status"]["status_str"] in ["error"]:
+                                return {"error": "Image generation failed -- ComfyUI workflow failed unexpectedly", "full_response": history[job_id]}
+                        except:
+                            pass
+                elif SERVICE_TYPE == "deforum":
+                    job_status = get_deforum_job_status(job_id)
+                    if job_status["status"] == "FAILED":
+                        return {"error": "Image generation failed", "full_response": job_status}
+                    elif job_status["status"] == "SUCCEEDED":
+                        output_directory_absolute_path = job_status["outdir"]
+                        images_result = process_output_images(output_directory_absolute_path, job_id)
+                        break
+                    # break
+                else:
+                    raise ValueError("Invalid SERVICE_TYPE")
                 # Wait before trying again
-                time.sleep(COMFY_POLLING_INTERVAL_MS / 1000)
+                time.sleep(SERVER_POLLING_INTERVAL_MS / 1000)
                 retries += 1
-        else:
-            return {"error": "Max retries reached while waiting for image generation"}
+            else:
+                return {"error": "Max retries reached while waiting for image generation"}
+        except Exception as e:
+            return {"error": f"Error waiting for image generation: {str(e)}"}
+        # Get the generated image and return it as URL in an AWS bucket or as base64
+        result = {**images_result, "refresh_worker": REFRESH_WORKER}
     except Exception as e:
-        return {"error": f"Error waiting for image generation: {str(e)}"}
-
-    # Get the generated image and return it as URL in an AWS bucket or as base64
-    images_result = process_output_images(history[prompt_id].get("outputs"), job["id"])
-
-    result = {**images_result, "refresh_worker": REFRESH_WORKER}
-
+        # stringify and jsonify the trackback
+        traceback_str = traceback.format_exc()
+        result = {"error": f"Error: {e.__class__.__name__}: {str(e)}", "traceback": traceback_str}
     return result
 
 
 # Start the handler only if this script is run directly
 if __name__ == "__main__":
     runpod.serverless.start({"handler": handler})
+

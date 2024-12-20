@@ -38,7 +38,7 @@ Currently this is a work in progress, and requires quite a few manual steps. Onc
 4. Having verified that the Pod works, edit the pod and change *Environmental Variables*:
   - delete PROVISIONING_SCRIPT and UPSTREAM_PROVISIONING_SCRIPT
   - disable services that you do not need by setting this variable to any of the following (comma-separated list):
-    - SUPERVISOR_NO_AUTOSTART = caddy,cloudflared,jupyter,quicktunnel,serviceportal,sshd,syncthing
+    - SUPERVISOR_NO_AUTOSTART = caddy,cloudflared,jupyter,logtail,quicktunnel,serviceportal,sshd,storagemonitor,syncthing
   - it is strongly recommended that at this point, you create a copy of the template with these modified settings
   - when you save the settings, the pod will restart
 5. Create a new serverless endpoint
