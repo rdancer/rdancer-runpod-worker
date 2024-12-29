@@ -10,7 +10,8 @@ ARG IMAGE_TYPE
 ENV DOCKER_IMAGE_TYPE=${IMAGE_TYPE}
 
 RUN pip3 install --no-cache-dir --upgrade \
-    debugpy
+    debugpy \
+    runpod
 
 # apt -y install ffmpeg is failing, so install this way
 RUN apt-get update || true && \

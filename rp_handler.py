@@ -10,29 +10,96 @@ import base64
 from io import BytesIO
 import glob
 import traceback
+import threading
+from datetime import datetime
 
 
+class LastLog(str):
+    def __new__(cls, service_type, *args, **kwargs):
+        instance = super().__new__(cls, *args, **kwargs)
+        instance.service_type = service_type
+        now = datetime.now()
+        instance.ignore_before = now
+        return instance
+    
+    def __str__(self):
+        if self.service_type == "comfyui":
+            return self.comfyui_log()
+        else:
+            return ""
+    
+    def comfyui_log(self):
+        """
+        Every 1.0s: ../bin/lastlog_comfy.sh                                                                                        d4c8c0aac707: Sat Dec 28 16:37:30 2024
 
+        [2024-12-28 16:36:45.533] got prompt
+        [2024-12-28 16:36:45.595] Prompt executed in 0.05 seconds
+        """
+        LOG_FILE = "/workspace/ComfyUI/comfyui.log"
+        with open(LOG_FILE, "r") as f:
+            lines = f.readlines()
+            # Find the last occurence of /] got prompt$/
+            lines.reverse()
+            printable_lines = []
+            start_datetime = None
+            for line in lines:
+                printable_lines.append(line)
+                # I believe this will reliably match even in cases where multiple processes write into the same file
+                if line.strip().endswith("] got prompt"):
+                    timestamp = line.split("]")[0].split("[")[1].strip()
+                    try:
+                        start_datetime = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f")
+                    except:
+                        start_datetime = None
+                    break
+            printable_lines.reverse()
+            if start_datetime is None:
+                return ""
+            elif start_datetime < self.ignore_before:
+                return ""
+            else:
+                return "".join(printable_lines)
+
+def get_bool_env(var_name, default=False):
+    """
+    Retrieve an environment variable as a boolean value using `strtobool`.
+
+    :param var_name: Name of the environment variable.
+    :param default: Default value if the environment variable is not set.
+    :return: Boolean representation of the environment variable.
+    """
+    value = os.getenv(var_name, str(default)).lower().strip()
+    try:
+        return bool(int(value))
+    except (ValueError, TypeError):
+        pass
+    return value in {"1", "true", "yes", "on", "enable", "enabled"}
+
+STREAM_OUTPUT = get_bool_env("STREAM_OUTPUT_IMAGES", True)
 SERVICE_TYPE = os.environ.get("DOCKER_IMAGE_TYPE", "comfyui").lower().strip()
 worker_name = f"runpod-worker-{SERVICE_TYPE}"
 
-if os.getenv("DEBUG", False):
+if get_bool_env("DEBUG", False):
     print(f"{worker_name} - DEBUG is enabled")
-    import debugpy
-    debugpy.listen(("0.0.0.0", 5678))
-    print(f"{worker_name} - Debugger listening on port 5678, connect now.")
-    import time
-    wait_time = 10
-    for i in range(wait_time):
-        print(f"{worker_name} - Waiting for debugger to attach ({wait_time-i: 3d})...")
-        time.sleep(1)
-        if debugpy.is_client_connected():
-            print(f"{worker_name} - Debugger attached, proceeding.")
-            break
-    else:
-        print(f"{worker_name} - Debugger failed to attach, proceeding.")
+    try:
+        import debugpy
+        debugpy.listen(("0.0.0.0", 5678))
+        print(f"{worker_name} - Debugger listening on port 5678, connect now.")
+        import time
+        wait_time = 10
+        for i in range(wait_time):
+            print(f"{worker_name} - Waiting for debugger to attach ({wait_time-i: 3d})...")
+            time.sleep(1)
+            if debugpy.is_client_connected():
+                print(f"{worker_name} - Debugger attached, proceeding.")
+                break
+        else:
+            print(f"{worker_name} - Debugger failed to attach, proceeding.")
+    except:
+        print(f"{worker_name} - Debug init failed -- probably already listening.")
+        pass
 
-assert SERVICE_TYPE in ("comfyui", "deforum"), f"Internal error -- unknown service type: {SERVICE_TYPE}"
+assert SERVICE_TYPE in ("comfyui", "deforum", "a1111"), f"Internal error -- unknown service type: {SERVICE_TYPE}"
 
 # Time to wait between API check attempts in milliseconds
 SERVER_API_AVAILABLE_INTERVAL_MS = int(os.environ.get("COMFY_API_AVAILABLE_INTERVAL_MS", 500))
@@ -49,7 +116,7 @@ SERVER_HOST = {
 }[SERVICE_TYPE]
 # Enforce a clean state after each job is done
 # see https://docs.runpod.io/docs/handler-additional-controls#refresh-worker
-REFRESH_WORKER = os.environ.get("REFRESH_WORKER", "false").lower() == "true"
+REFRESH_WORKER = get_bool_env("REFRESH_WORKER", False)
 
 
 def validate_input(job_input):
@@ -108,7 +175,7 @@ def check_server(url, retries=SERVER_API_AVAILABLE_MAX_RETRIES, delay=SERVER_API
     """
 
     print(f"{worker_name} - Checking server at {url}")
-    if os.getenv("DEBUG_NO_CHECK_SERVER", False):
+    if get_bool_env("DEBUG_NO_CHECK_SERVER", False):
         print(f"{worker_name} - Will skip server check because DEBUG_NO_CHECK_SERVER is enabled")
         return True
 
@@ -219,7 +286,10 @@ def queue_workflow(workflow):
 
     Returns:
         dict: The JSON response from ComfyUI after processing the workflow
+        LastLog: object that encapsulates the string representation of the log messages associated with the workflow
     """
+
+    lastlog = LastLog(service_type=SERVICE_TYPE) # Instantiate before the server starts logging, because we use timestamps to deconflict which log messages are ours
 
     if SERVICE_TYPE == "comfyui":
         # The top level element "prompt" is required by ComfyUI
@@ -234,9 +304,9 @@ def queue_workflow(workflow):
     req.add_header("Content-Type", "application/json")
     try:
         res = urllib.request.urlopen(req)
-        return json.loads(res.read())
+        return lastlog, json.loads(res.read())
     except urllib.error.HTTPError as e:
-        return {"error": str(e), "error_response": e.read().decode('utf-8'), "response": res.read() if 'res' in locals() else None, "workflow": workflow, "api_url": api_url}
+        return None, {"error": str(e), "error_response": e.read().decode('utf-8'), "response": res.read() if 'res' in locals() else None, "workflow": workflow, "api_url": api_url}
 
 def get_deforum_job_status(job_id):
     """
@@ -326,8 +396,10 @@ def process_output_images(outputs, job_id):
         # the basename looks like "/runpod-volume/stable-diffusion-webui/outputs/img2img-images/Deforum_20241204213940"
         # so we have to do the equivalent of "/runpod-volume/stable-diffusion-webui/outputs/img2img-images/Deforum_20241204213940"* to get all the images' paths
         output_images = [f for f in glob.glob(f"{outputs}/*") if os.path.isfile(f)]
+        # exclude .mp4 files and .txt files
+        output_images = [f for f in output_images if not f.endswith(".mp4") and not f.endswith(".txt")]
 
-    print(f"{worker_name} - image generation is done")
+    print(f"{worker_name} - gathering output images")
 
     encoded_output_images = []
     for local_image_path in output_images:
@@ -336,7 +408,7 @@ def process_output_images(outputs, job_id):
         # The image is in the output folder
         if os.path.exists(local_image_path):
             base_name = os.path.basename(local_image_path)
-            if os.environ.get("BUCKET_ENDPOINT_URL", False):
+            if get_bool_env("BUCKET_ENDPOINT_URL", False):
                 # URL to image in AWS S3
                 image = rp_upload.upload_image(job_id, local_image_path)
                 print(
@@ -374,6 +446,28 @@ def process_output_images(outputs, job_id):
             ret["outputs"] = all_outputs
         return ret
 
+class OutputStreamer:
+    def __init__(self, output_directory_absolute_path, job_id):
+        self.output_directory_absolute_path = output_directory_absolute_path
+        self.job_id = job_id
+        self.output_images = {}
+        self.output_images_lock = threading.Lock()
+
+    def get_new_images(self):
+        """
+        This is a very ingenious wrapper around process_output_images() that yields any new images as they are generated.
+        """
+        try:
+            images_result = process_output_images(self.output_directory_absolute_path, self.job_id)
+            if images_result["status"] == "success":
+                for image in images_result["images"]:
+                    with self.output_images_lock:
+                        if image["name"] not in self.output_images:
+                            self.output_images[image["name"]] = image
+                            yield image
+        except Exception as e:
+            print(f"{worker_name} - Error streaming output for job {self.job_id} in directory {self.output_directory_absolute_path}: {e}")
+
 
 def handler(job):
     """
@@ -394,7 +488,8 @@ def handler(job):
         # Make sure that the input is valid
         validated_data, error_message = validate_input(job_input)
         if error_message:
-            return {"error": error_message}
+            yield {"error": error_message}
+            return
 
         # Extract validated data
         workflow = validated_data["workflow"]
@@ -411,12 +506,13 @@ def handler(job):
         upload_result = upload_images(images)
 
         if upload_result["status"] == "error":
-            return upload_result
+            yield upload_result
+            return
 
         # Queue the workflow
-        queued_workflow = None
+        lastlog, queued_workflow = None, None
         try:
-            queued_workflow = queue_workflow(workflow)
+            lastlog, queued_workflow = queue_workflow(workflow)
             if SERVICE_TYPE == "comfyui":
                 job_id = queued_workflow["prompt_id"]
             elif SERVICE_TYPE == "deforum":
@@ -424,7 +520,8 @@ def handler(job):
             print(f"{worker_name} - queued workflow with ID {job_id}")
         except Exception as e:
             traceback_str = traceback.format_exc()
-            return {"error": f"Error queuing workflow -- {e.__class__.__name__}: {str(e)}", "traceback": traceback_str, "workflow": workflow, "queued_workflow": queued_workflow}
+            yield {"error": f"Error queuing workflow -- {e.__class__.__name__}: {str(e)}", "traceback": traceback_str, "workflow": workflow, "queued_workflow": queued_workflow}
+            return
 
         # Poll for completion
         print(f"{worker_name} - wait until image generation is complete")
@@ -432,6 +529,7 @@ def handler(job):
         images_result = {}
         try:
             while retries < SERVER_POLLING_MAX_RETRIES:
+                runpod.serverless.progress_update(job, {'log': str(lastlog)})
                 if SERVICE_TYPE == "comfyui":
                     history = get_comfyui_history(job_id)
 
@@ -442,37 +540,55 @@ def handler(job):
                     else:
                         try:
                             if history[job_id]["status"]["status_str"] in ["error"]:
-                                return {"error": "Image generation failed -- ComfyUI workflow failed unexpectedly", "full_response": history[job_id]}
+                                yield {"error": "Image generation failed -- ComfyUI workflow failed unexpectedly", "full_response": history[job_id]}
+                                return
                         except:
                             pass
                 elif SERVICE_TYPE == "deforum":
                     job_status = get_deforum_job_status(job_id)
                     if job_status["status"] == "FAILED":
-                        return {"error": "Image generation failed", "full_response": job_status}
+                        yield {"error": "Image generation failed", "full_response": job_status}
+                        return
                     elif job_status["status"] == "SUCCEEDED":
                         output_directory_absolute_path = job_status["outdir"]
                         images_result = process_output_images(output_directory_absolute_path, job_id)
                         break
+                    elif STREAM_OUTPUT:
+                        # if "output_streamer" not in locals():
+                        #     output_streamer = OutputStreamer(output_directory_absolute_path, job_id)
+                        # for image in output_streamer.get_new_images():
+                        try:
+                            output_directory_absolute_path = job_status["outdir"]
+                            image_result = process_output_images(output_directory_absolute_path, job_id)
+                            yield image_result
+                        except Exception as e:
+                            yield {"error": f"Error streaming output for job {job_id}: {e.__class__.__name__}: {e}"}
                     # break
+                elif SERVICE_TYPE == "a1111":
+                    raise NotImplementedError("A1111 is not yet implemented")
+                    # XXX actually implement A1111
                 else:
                     raise ValueError("Invalid SERVICE_TYPE")
                 # Wait before trying again
                 time.sleep(SERVER_POLLING_INTERVAL_MS / 1000)
                 retries += 1
             else:
-                return {"error": "Max retries reached while waiting for image generation"}
+                yield {"error": "Max retries reached while waiting for image generation"}
+                return
         except Exception as e:
-            return {"error": f"Error waiting for image generation: {str(e)}"}
+            yield {"error": f"Error waiting for image generation: {str(e)}"}
+            return
         # Get the generated image and return it as URL in an AWS bucket or as base64
         result = {**images_result, "refresh_worker": REFRESH_WORKER}
     except Exception as e:
         # stringify and jsonify the trackback
         traceback_str = traceback.format_exc()
         result = {"error": f"Error: {e.__class__.__name__}: {str(e)}", "traceback": traceback_str}
-    return result
+    yield result
+    return
 
 
 # Start the handler only if this script is run directly
 if __name__ == "__main__":
-    runpod.serverless.start({"handler": handler})
+    runpod.serverless.start({"handler": handler, "return_aggregate_stream": True})
 

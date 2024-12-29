@@ -2,7 +2,7 @@ version: '3.7'
 
 services:
   rdancer-comfyui-worker:
-    image: rdancer/runpod-worker-comfyui:0.0.30
+    image: rdancer/runpod-worker-comfyui:0.0.31rc6
     build:
       context: .
       args:
@@ -16,7 +16,7 @@ services:
     restart: always
 
   rdancer-deforum-worker:
-    image: rdancer/runpod-worker-deforum:0.0.30
+    image: rdancer/runpod-worker-deforum:0.0.31rc1
     build:
       context: .
       args:

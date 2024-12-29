@@ -102,6 +102,24 @@ POST this to https://api.runpod.ai/v2/{{SLS_ENDPOINT_ID}}/run
 }
 ```
 
+
+### In-Progress Status
+
+While the job is *IN_PROGRESS*, the status is updated periodically with logs:
+
+```json
+{
+    "delayTime": 14604,
+    "id": "5b775469-d6e6-4af2-815b-649007fcfada-e1",
+    "output": {
+        // these are raw logs, with terminal escape sequences; lines are terminated with \n; note that progress bars often are overprinted using bare \r
+        "log": "[2024-12-29 21:17:29.927] got prompt\n[2024-12-29 21:17:34.416] model weight dtype torch.float16, manual cast: None\n[2024-12-29 21:17:34.418] model_type EPS\n"
+    },
+    "status": "IN_PROGRESS",
+    "workerId": "o4z7gczo8to13u"
+}
+```
+
 ### Output schema
 
 #### ComfyUI
@@ -117,15 +135,17 @@ A successfully *completed* job will return a JSON object like this:
   "delayTime": 100,
   "executionTime": 64701,
   "id": "sync-6821b6c3-47c1-49cc-8d46-23c15e36f671-e1",
-  "output": {
-    "status": "success", // or "error"
-    "images": [
-      {
-        "name": "test_00001_.png",
-        "image": "iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAIAAAB7..."
+  "output": [
+    {
+        "status": "success", // or "error"
+        "images": [
+          {
+            "name": "test_00001_.png",
+            "image": "iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAIAAAB7..."
+          }
+        ]
       }
-    ]
-  },
+    ],
   "status": "COMPLETED",
   "workerId": "2exm06mm3m8sm1"
 }
