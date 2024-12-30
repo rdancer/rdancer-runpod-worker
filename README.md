@@ -1,12 +1,14 @@
 # Docker images `rdancer/runpod-worker-comfy`, `rdancer/runpod-worker-deforum`
 
-*Note: each worker image has its own branch in this repo, named same as the DockerHub name, i.e. `rdancer/runpod-worker-comfy` and `rdancer/runpod-worker-deforum`.*
+*Note: each worker image has its own branch in this repo, named same as the DockerHub name, i.e. `rdancer/runpod-worker-comfy`, `rdancer/runpod-worker-a1111`, and `rdancer/runpod-worker-deforum`.*
 
 These are minimal changes on top of https://github.com/blib-la/runpod-worker-comfy to make this work nice with my Runpod images.
 
 We will set up a Pod (server) and a serverless worker. They both share the same network volume. The instructions below have been tested with modified AI-Dock, but as long as ComfyUI is installed in /workspace/ComfyUI, with venv in /workspace/ComfyUI/venv (and analogously for A1111), this image should work.
 
 ### RunPod Pod
+
+*TODO: Revise for A1111 and for Streaming*
 
 The main point of this image is to be able to work with a single network volume attached at /workspace, both from a pod and from a serverless worker.
 
@@ -120,6 +122,10 @@ While the job is *IN_PROGRESS*, the status is updated periodically with logs:
 }
 ```
 
+### Streaming output
+
+You can stream the output from the /stream endpoint. The schema is similar to the final output schema, but the output is sharded under the `stream` key.
+
 ### Output schema
 
 #### ComfyUI
@@ -132,31 +138,24 @@ A successfully *completed* job will return a JSON object like this:
 
 ```json
 {
-  "delayTime": 100,
-  "executionTime": 64701,
-  "id": "sync-6821b6c3-47c1-49cc-8d46-23c15e36f671-e1",
+  "delayTime": 226952,
+  "executionTime": 153879,
+  "id": "b39ee8c4-0d0c-4dcb-aedc-364d4fa771eb-u1",
   "output": [
     {
-        "status": "success", // or "error"
-        "images": [
-          {
-            "name": "test_00001_.png",
-            "image": "iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAIAAAB7..."
-          }
-        ]
-      }
-    ],
+      // there is either "images" or "log" or both, and sometimes other keys such as "error", "satatus", etc.
+      "images": [
+        {
+          "image": "iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAIAAAB7...",
+          "name": "image_0000.png"
+        },
+        ...
+      ],
+      "log": "\n\n2023-09-21 14:58:18.718 \e[31m;INFO\e[0;   | comfyui.server:handle_req..."
+    },
+    ...
+  ],
   "status": "COMPLETED",
-  "workerId": "2exm06mm3m8sm1"
+  "workerId": "r853qiic7qsaf3"
 }
 ```
-
-#### Deforum
-
-```json
-{
-    // TODO
-}
-```
-
-

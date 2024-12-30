@@ -14,6 +14,9 @@ import threading
 from datetime import datetime
 
 
+class InternalServerError(Exception):
+    pass
+
 class LastLog(str):
     """
     A string subclass that captures the last log messages from the ComfyUI or Deform server logs.
@@ -33,6 +36,8 @@ class LastLog(str):
             s = self.comfyui_log()
         elif self.service_type == "deforum":
             s = self.deforum_log()
+        elif self.service_type == "a1111":
+            s = self.a1111_log()
         else:
             s = ""
         # Check if truncated or something else went wrong
@@ -48,6 +53,29 @@ class LastLog(str):
     def get_log(self):
         return str(self)
 
+    def a1111_log(self):
+        """
+        WARNING:root:Sampler Scheduler autocorrection: "Euler" -> "Euler", "default" -> "Automatic"
+        INFO:sd_dynamic_prompts.dynamic_prompting:Prompt matrix will create 3 images in a total of 1 batches.
+        ...
+        Total progress: 100%|██████████| 50/50 [00:04<00:00, 11.21it/s]
+        """
+        LOG_FILE = "/var/log/supervisor/webui.log"
+        with open(LOG_FILE, "r") as f:
+            lines = f.readlines()
+            # Find the last occurence of /INFO:sd_dynamic_prompts.dynamic_prompting:Prompt matrix will create/
+            lines.reverse()
+            printable_lines = []
+            good_log = False
+            for line in lines:
+                printable_lines.append(line)
+                if "INFO:sd_dynamic_prompts.dynamic_prompting:Prompt matrix will create" in line:
+                    good_log = True
+                    # Ignore the /Euler/ line, that's fine, those errors are not always there, and we don't have a good way to figure out which errors are ours
+                    break
+            printable_lines.reverse()
+            return "".join(printable_lines) if good_log else ""
+        
     def deforum_log(self):
         """
         INFO:deforum_api:Starting batch batch(230991444) in thread 127007337743936.
@@ -154,6 +182,7 @@ SERVER_POLLING_MAX_RETRIES = int(os.environ.get("COMFY_POLLING_MAX_RETRIES", 864
 SERVER_HOST = {
     "comfyui": os.environ.get("COMFY_HOST", "127.0.0.1:8188"),
     "deforum": os.environ.get("WEBUI_HOST", "127.0.0.1:17860"),
+    "a1111": os.environ.get("WEBUI_HOST", "127.0.0.1:17860"),
 }[SERVICE_TYPE]
 # Enforce a clean state after each job is done
 # see https://docs.runpod.io/docs/handler-additional-controls#refresh-worker
@@ -345,6 +374,9 @@ def queue_workflow(workflow):
     elif SERVICE_TYPE == "deforum":
         data = json.dumps(workflow).encode("utf-8")
         api_url = f"http://{SERVER_HOST}/deforum_api/batches"
+    elif SERVICE_TYPE == "a1111":
+        data = json.dumps(workflow).encode("utf-8")
+        api_url = f"http://{SERVER_HOST}/sdapi/v1/txt2img"
     else:
         raise ValueError("Invalid SERVICE_TYPE")
     req = urllib.request.Request(api_url, data=data)
@@ -354,6 +386,12 @@ def queue_workflow(workflow):
         return lastlog, json.loads(res.read())
     except urllib.error.HTTPError as e:
         return None, {"error": str(e), "error_response": e.read().decode('utf-8'), "response": res.read() if 'res' in locals() else None, "workflow": workflow, "api_url": api_url}
+
+def get_a1111_job_status(job_id):
+    """
+    The A1111 API is synchronous, so we don't need to poll for job status
+    """
+    raise NotImplementedError("A1111 API is synchronous, you should not be using this method [get_a1111_job_status()] for A1111")
 
 def get_deforum_job_status(job_id):
     """
@@ -446,6 +484,9 @@ def process_output_images(outputs, job_id):
         # exclude .mp4 files and .txt files
         output_images = [f for f in output_images if not f.endswith(".mp4") and not f.endswith(".txt")]
         output_images.sort(key=lambda x: os.path.basename(x))
+
+    elif SERVICE_TYPE == "a1111":
+        raise InternalServerError("A1111 is synchronous, you should not be using this method [process_output_images()] for A1111")
 
     print(f"{worker_name} - gathering output images")
 
@@ -545,7 +586,8 @@ def handler(job):
 
         # Make sure that the ComfyUI API is available
         check_server(
-            f"http://{SERVER_HOST}" + ("/deforum_api/jobs" if SERVICE_TYPE == "deforum" else ""),
+            # Note we use the deforum API endpoint's existence as a proxy for the webui being up and not having crashed on startup (it gets reloaded on crash, but if we just check the normal API endpoint, we often catch it while it still has not crashed yet)
+            f"http://{SERVER_HOST}" + ("/deforum_api/jobs" if SERVICE_TYPE in ["deforum", "a1111"] else ""),
             SERVER_API_AVAILABLE_MAX_RETRIES,
             SERVER_API_AVAILABLE_INTERVAL_MS,
         )
@@ -569,6 +611,28 @@ def handler(job):
                     yield queued_workflow
                     return
                 job_id = queued_workflow["job_ids"][0]
+            elif SERVICE_TYPE == "a1111":
+                # The sdapi API is synchronous, so we just return the result here straight away
+                time.sleep(1) # allow log to be written to disk
+                runpod.serverless.progress_update(job, {'log': str(lastlog)}) # Get the logging out of the way, we will not come back to it later
+                result = queued_workflow
+                if "error" in result:
+                    print(f"{worker_name} - Error running txt2image: {result['error']}")
+                    yield {**result}
+                try:
+                    # SDAPI does not give us image names, only image data
+                    images = []
+                    for i, image in enumerate(result["images"]):
+                        images.append({
+                            "name": f"image_{i:04d}.png",
+                            "image": image
+                        })
+                    if not images:
+                        raise ValueError("No images generated")
+                except Exception as e:
+                    yield {"error": f"Error processing output images -- {e.__class__.__name__}: {str(e)}"}
+                yield {"status": "success", "images": images}
+                return
             print(f"{worker_name} - queued workflow with ID {job_id}")
         except Exception as e:
             traceback_str = traceback.format_exc()
@@ -631,8 +695,7 @@ def handler(job):
                             yield {"log": log, **stream_res}
                     # break
                 elif SERVICE_TYPE == "a1111":
-                    raise NotImplementedError("A1111 is not yet implemented")
-                    # XXX actually implement A1111
+                    raise InternalServerError("A1111 is synchronous, we should not be polling for job status, yet somehow we are?")
                 else:
                     raise ValueError("Invalid SERVICE_TYPE")
                 # Wait before trying again

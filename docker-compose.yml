@@ -36,3 +36,23 @@ services:
       - "5678:5678"    # Debugger port
       - "22:22"        # SSH port
     restart: always
+
+  rdancer-a1111-worker:
+    image: rdancer/runpod-worker-a1111:0.0.32rc2
+    build:
+      context: .
+      args:
+        MY_BASE_IMAGE: ghcr.io/ai-dock/stable-diffusion-webui:v2-cuda-12.1.1-base-22.04-v1.10.1
+        IMAGE_TYPE: a1111
+    container_name: rdancer-a1111-worker
+    environment:
+      # Note that we use the --deforum-api flag here, because we want to unify the check_server() method between the vanilla a1111 and deforum workers.
+      - WEBUI_ARGS=--xformers --no-half-vae --api --deforum-api # This is required
+      - WEBUI_VENV=/workspace/environments/python/webui
+      - WORKSPACE=/workspace
+    ports:
+      - "17860:17860"  # Web UI port
+      - "5678:5678"    # Debugger port
+      - "22:22"        # SSH port
+    restart: always
+

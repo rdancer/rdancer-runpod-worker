@@ -33,8 +33,8 @@ if [ "$DOCKER_IMAGE_TYPE" == "comfyui" ]; then
     )
     echo "runpod-worker-$DOCKER_IMAGE_TYPE: Starting RunPod Handler"
     python3 -u /rp_handler.py
-elif [ "$DOCKER_IMAGE_TYPE" == "deforum" ]; then
-    echo "runpod-worker-$DOCKER_IMAGE_TYPE: Starting Deforum"
+elif [ "$DOCKER_IMAGE_TYPE" == "deforum" ] || [ "$DOCKER_IMAGE_TYPE" == "a1111" ]; then
+    echo "runpod-worker-$DOCKER_IMAGE_TYPE: Starting ${DOCKER_IMAGE_TYPE}"
 
     # Note that init.sh requires a (fairly recent version of) bash
     (
