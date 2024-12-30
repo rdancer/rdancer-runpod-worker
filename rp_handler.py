@@ -15,19 +15,60 @@ from datetime import datetime
 
 
 class LastLog(str):
+    """
+    A string subclass that captures the last log messages from the ComfyUI or Deform server logs.
+
+    To avoid races (printing other jobs' logs), instantiate this class *just before* a job is started, and only call it while the job is ongoing. We will probably need to call this class one last time just after the job finishes, and if there are back-to-back jobs, we may print the next job's logs. We would need to refactor the logging of the upstream services to avoid this, which we won't, or restart the service after every job, which we also don't want to do. So we'll just have to live with the possibility of printing the next job's logs, for now.
+    """
     def __new__(cls, service_type, *args, **kwargs):
         instance = super().__new__(cls, *args, **kwargs)
         instance.service_type = service_type
         now = datetime.now()
         instance.ignore_before = now
+        instance.sent_data = ""
         return instance
     
     def __str__(self):
         if self.service_type == "comfyui":
-            return self.comfyui_log()
+            s = self.comfyui_log()
+        elif self.service_type == "deforum":
+            s = self.deforum_log()
         else:
-            return ""
-    
+            s = ""
+        # Check if truncated or something else went wrong
+        # The first len(self.sent_data) characters of s should be self.sent_data
+        if not s.startswith(self.sent_data):
+            print(f"WARNING: Truncated log message! {len(s)} characters, {len(self.sent_data)} sent so far.")
+            to_send = s
+        else:
+            to_send = s[len(self.sent_data):]
+        self.sent_data += to_send
+        return to_send
+
+    def get_log(self):
+        return str(self)
+
+    def deforum_log(self):
+        """
+        INFO:deforum_api:Starting batch batch(230991444) in thread 127007337743936.
+        ...
+        ^MVideo stitching ESC[0;32mdoneESC[0m in 1.07 seconds!
+        """
+        LOG_FILE = "/var/log/supervisor/webui.log"
+        with open(LOG_FILE, "r") as f:
+            lines = f.readlines()
+            # Find the last occurence of /deforum_api:Starting batch/
+            lines.reverse()
+            printable_lines = []
+            good_log = False
+            for line in lines:
+                printable_lines.append(line)
+                if "deforum_api:Starting batch" in line:
+                    good_log = True
+                    break
+            printable_lines.reverse()
+            return "".join(printable_lines) if good_log else ""
+
     def comfyui_log(self):
         """
         Every 1.0s: ../bin/lastlog_comfy.sh                                                                                        d4c8c0aac707: Sat Dec 28 16:37:30 2024
@@ -186,6 +227,12 @@ def check_server(url, retries=SERVER_API_AVAILABLE_MAX_RETRIES, delay=SERVER_API
             # If the response status code is 200, the server is up and running
             if response.status_code == 200:
                 print(f"{worker_name} - API is reachable")
+                if SERVICE_TYPE in ["a1111", "deforum"]:
+                    if not "crash_workaround_done" in locals():
+                        print(f"{worker_name} - API is reachable, but checking again to work around a crash bug")
+                        crash_workaround_done = True
+                        time.sleep(5)
+                        continue
                 return True
         except requests.RequestException as e:
             # If an exception occurs, the server may not be ready
@@ -398,6 +445,7 @@ def process_output_images(outputs, job_id):
         output_images = [f for f in glob.glob(f"{outputs}/*") if os.path.isfile(f)]
         # exclude .mp4 files and .txt files
         output_images = [f for f in output_images if not f.endswith(".mp4") and not f.endswith(".txt")]
+        output_images.sort(key=lambda x: os.path.basename(x))
 
     print(f"{worker_name} - gathering output images")
 
@@ -497,7 +545,7 @@ def handler(job):
 
         # Make sure that the ComfyUI API is available
         check_server(
-            f"http://{SERVER_HOST}",
+            f"http://{SERVER_HOST}" + ("/deforum_api/jobs" if SERVICE_TYPE == "deforum" else ""),
             SERVER_API_AVAILABLE_MAX_RETRIES,
             SERVER_API_AVAILABLE_INTERVAL_MS,
         )
@@ -516,6 +564,10 @@ def handler(job):
             if SERVICE_TYPE == "comfyui":
                 job_id = queued_workflow["prompt_id"]
             elif SERVICE_TYPE == "deforum":
+                if "error" in queued_workflow:
+                    # queued_workflow is already the error response
+                    yield queued_workflow
+                    return
                 job_id = queued_workflow["job_ids"][0]
             print(f"{worker_name} - queued workflow with ID {job_id}")
         except Exception as e:
@@ -529,8 +581,8 @@ def handler(job):
         images_result = {}
         try:
             while retries < SERVER_POLLING_MAX_RETRIES:
-                runpod.serverless.progress_update(job, {'log': str(lastlog)})
                 if SERVICE_TYPE == "comfyui":
+                    runpod.serverless.progress_update(job, {'log': str(lastlog)})
                     history = get_comfyui_history(job_id)
 
                     # Exit the loop if we have found the history or encountered an error
@@ -551,18 +603,32 @@ def handler(job):
                         return
                     elif job_status["status"] == "SUCCEEDED":
                         output_directory_absolute_path = job_status["outdir"]
-                        images_result = process_output_images(output_directory_absolute_path, job_id)
+                        if "output_streamer" in locals():
+                            images = [image for image in output_streamer.get_new_images()]
+                            if images:
+                                images_result = { "images": [image for image in output_streamer.get_new_images()], "streamed": True }
+                            else:
+                                images_result = { "streamed": True}
+                        else:
+                            images_result = process_output_images(output_directory_absolute_path, job_id)
                         break
                     elif STREAM_OUTPUT:
-                        # if "output_streamer" not in locals():
-                        #     output_streamer = OutputStreamer(output_directory_absolute_path, job_id)
-                        # for image in output_streamer.get_new_images():
+                        stream_res = {}
                         try:
-                            output_directory_absolute_path = job_status["outdir"]
-                            image_result = process_output_images(output_directory_absolute_path, job_id)
-                            yield image_result
+                            if "output_streamer" not in locals():
+                                output_directory_absolute_path = job_status["outdir"]
+                                if not output_directory_absolute_path:
+                                    raise ValueError("Output directory not found")
+                                output_streamer = OutputStreamer(output_directory_absolute_path, job_id)
+                            images = [image for image in output_streamer.get_new_images()]
+                            if images:
+                                stream_res = { "images": images }
                         except Exception as e:
-                            yield {"error": f"Error streaming output for job {job_id}: {e.__class__.__name__}: {e}"}
+                            pass
+                        log = str(lastlog)
+                        # Do not spam empty updates
+                        if log or stream_res:
+                            yield {"log": log, **stream_res}
                     # break
                 elif SERVICE_TYPE == "a1111":
                     raise NotImplementedError("A1111 is not yet implemented")
@@ -585,7 +651,7 @@ def handler(job):
         traceback_str = traceback.format_exc()
         result = {"error": f"Error: {e.__class__.__name__}: {str(e)}", "traceback": traceback_str}
     yield result
-    return
+    return result
 
 
 # Start the handler only if this script is run directly

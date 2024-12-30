@@ -14,9 +14,13 @@ services:
       - COMFYUI_API_TOKEN=your-api-token
       - COMFYUI_API_SECRET=your-api-secret
     restart: always
+    ports:
+      - "8188:8188"    # ComfyUI port
+      - "5678:5678"    # Debugger port
+      - "22:22"        # SSH port
 
   rdancer-deforum-worker:
-    image: rdancer/runpod-worker-deforum:0.0.31rc1
+    image: rdancer/runpod-worker-deforum:0.0.32rc9
     build:
       context: .
       args:
@@ -29,5 +33,6 @@ services:
       - WORKSPACE=/workspace
     ports:
       - "17860:17860"  # Web UI port
-      - "5678:5678"  # Debugger port
+      - "5678:5678"    # Debugger port
+      - "22:22"        # SSH port
     restart: always

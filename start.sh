@@ -21,7 +21,9 @@ TCMALLOC="$(ldconfig -p | grep -Po "libtcmalloc.so.\d" | head -n 1)"
 export LD_PRELOAD="${TCMALLOC}"
 
 # Serve the API and don't shutdown the container
-test [ -z "$DOCKER_IMAGE_TYPE" ] && DOCKER_IMAGE_TYPE="comfyui"
+if [ -z "$DOCKER_IMAGE_TYPE" ]; then
+    DOCKER_IMAGE_TYPE="comfyui"
+fi
 if [ "$DOCKER_IMAGE_TYPE" == "comfyui" ]; then
     echo "runpod-worker-$DOCKER_IMAGE_TYPE: Starting ComfyUI"
     (
