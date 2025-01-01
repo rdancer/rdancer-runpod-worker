@@ -12,6 +12,7 @@ import glob
 import traceback
 import threading
 from datetime import datetime
+from clean_old_files import clean_old_files
 
 
 class InternalServerError(Exception):
@@ -170,7 +171,7 @@ if get_bool_env("DEBUG", False):
         print(f"{worker_name} - Debug init failed -- probably already listening.")
         pass
 
-assert SERVICE_TYPE in ("comfyui", "deforum", "a1111"), f"Internal error -- unknown service type: {SERVICE_TYPE}"
+assert SERVICE_TYPE in ("comfyui", "deforum", "a1111", "misc"), f"Internal error -- unknown service type: {SERVICE_TYPE}"
 
 # Time to wait between API check attempts in milliseconds
 SERVER_API_AVAILABLE_INTERVAL_MS = int(os.environ.get("COMFY_API_AVAILABLE_INTERVAL_MS", 500))
@@ -185,6 +186,7 @@ SERVER_HOST = {
     "comfyui": os.environ.get("COMFY_HOST", "127.0.0.1:8188"),
     "deforum": os.environ.get("WEBUI_HOST", "127.0.0.1:17860"),
     "a1111": os.environ.get("WEBUI_HOST", "127.0.0.1:17860"),
+    "misc": None
 }[SERVICE_TYPE]
 # Enforce a clean state after each job is done
 # see https://docs.runpod.io/docs/handler-additional-controls#refresh-worker
@@ -573,6 +575,17 @@ def handler(job):
     Returns:
         dict: A dictionary containing either an error message or a success status with generated images.
     """
+    if SERVICE_TYPE == "misc":
+        # Special
+        clean_dirs = os.getenv("RM_RF_DIRS", "").split(":")
+        try:
+            cleaned_files_json = clean_old_files(clean_dirs)
+            yield cleaned_files_json
+            return cleaned_files_json
+        except Exception as e:
+            print(f"{worker_name} - Error cleaning old files: {e}")
+            yield {"error": f"Error cleaning old files: {e}"}
+            return
     try:
         job_input = job["input"]
 
