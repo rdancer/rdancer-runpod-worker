@@ -12,7 +12,7 @@ import glob
 import traceback
 import threading
 from datetime import datetime
-from clean_old_files import clean_old_files
+from my_cron import run_cron_tasks
 
 
 class InternalServerError(Exception):
@@ -577,11 +577,16 @@ def handler(job):
     """
     if SERVICE_TYPE == "misc":
         # Special
-        clean_dirs = os.getenv("RM_RF_DIRS", "").split(":")
         try:
-            cleaned_files_json = clean_old_files(clean_dirs)
-            yield cleaned_files_json
-            return cleaned_files_json
+            job_input = job["input"]
+            workflow = job_input.get("workflow", {})
+            command = workflow.get("command", "")
+            params = workflow.get("params", {})
+            ignore_scheduling = params.get("ignore_scheduling", True)
+            if command == "cron":
+                report = run_cron_tasks(ignore_scheduling=ignore_scheduling)
+                yield report
+                return report
         except Exception as e:
             print(f"{worker_name} - Error cleaning old files: {e}")
             yield {"error": f"Error cleaning old files: {e}"}

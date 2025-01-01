@@ -64,8 +64,6 @@ services:
             MY_BASE_IMAGE: timpietruskyblibla/runpod-worker-comfy:3.1.2-base
             IMAGE_TYPE: misc
         container_name: rdancer-misc-worker
-        environment:
-          - RM_RF_DIRS=/workspace/ComfyUI/output:/workspace/stable-diffusion-webui/outputs
         ports:
           - "22:22"        # SSH port
         restart: always
