@@ -2,7 +2,7 @@ version: '3.7'
 
 services:
   rdancer-comfyui-worker:
-    image: rdancer/runpod-worker-comfyui:0.0.31rc6
+    image: rdancer/runpod-worker-comfyui:0.0.32rc1
     build:
       context: .
       args:

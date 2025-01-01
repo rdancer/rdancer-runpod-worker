@@ -32,6 +32,9 @@ class LastLog(str):
         return instance
     
     def __str__(self):
+        return self.get_log()
+    
+    def get_log(self, last_only=True):
         if self.service_type == "comfyui":
             s = self.comfyui_log()
         elif self.service_type == "deforum":
@@ -40,6 +43,8 @@ class LastLog(str):
             s = self.a1111_log()
         else:
             s = ""
+        if not last_only:
+            return s
         # Check if truncated or something else went wrong
         # The first len(self.sent_data) characters of s should be self.sent_data
         if not s.startswith(self.sent_data):
@@ -49,9 +54,6 @@ class LastLog(str):
             to_send = s[len(self.sent_data):]
         self.sent_data += to_send
         return to_send
-
-    def get_log(self):
-        return str(self)
 
     def a1111_log(self):
         """
@@ -613,8 +615,12 @@ def handler(job):
                 job_id = queued_workflow["job_ids"][0]
             elif SERVICE_TYPE == "a1111":
                 # The sdapi API is synchronous, so we just return the result here straight away
+
+                # Get the logging out of the way, we will not come back to it later
                 time.sleep(1) # allow log to be written to disk
-                runpod.serverless.progress_update(job, {'log': str(lastlog)}) # Get the logging out of the way, we will not come back to it later
+                runpod.serverless.progress_update(job, {'log': lastlog.get_log(last_only=False)}) 
+                yield {"log": str(lastlog)}
+                
                 result = queued_workflow
                 if "error" in result:
                     print(f"{worker_name} - Error running txt2image: {result['error']}")
@@ -645,8 +651,8 @@ def handler(job):
         images_result = {}
         try:
             while retries < SERVER_POLLING_MAX_RETRIES:
+                runpod.serverless.progress_update(job, {'log': lastlog.get_log(last_only=False)})
                 if SERVICE_TYPE == "comfyui":
-                    runpod.serverless.progress_update(job, {'log': str(lastlog)})
                     history = get_comfyui_history(job_id)
 
                     # Exit the loop if we have found the history or encountered an error
