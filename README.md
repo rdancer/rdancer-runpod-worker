@@ -1,4 +1,4 @@
-# Docker images `rdancer/runpod-worker-comfy`, `rdancer/runpod-worker-deforum`
+# Docker images `rdancer/runpod-worker-comfy`, `rdancer/runpod-worker-a1111`, `rdancer/runpod-worker-deforum`
 
 *Note: each worker image has its own branch in this repo, named same as the DockerHub name, i.e. `rdancer/runpod-worker-comfy`, `rdancer/runpod-worker-a1111`, and `rdancer/runpod-worker-deforum`.*
 
