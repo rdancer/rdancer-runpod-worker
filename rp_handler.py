@@ -1,3 +1,4 @@
+import uuid
 import runpod
 from runpod.serverless.utils import rp_upload
 import json
@@ -12,6 +13,7 @@ import glob
 import traceback
 import threading
 from datetime import datetime
+from tempfile import NamedTemporaryFile
 
 
 class InternalServerError(Exception):
@@ -463,6 +465,24 @@ def rp_upload_image(job_id, local_image_path):
     url = wrappee(job_id, local_image_path, bucket_name=AWS_S3_BUCKET)
     return url
 
+def upload_png_to_s3(job_id: str, png_data: str) -> str:
+    """
+    Upload a PNG image to an S3 bucket
+
+    Args:
+        job_id (str): The unique identifier for the job
+        png_data (str): base64-encoded PNG image data
+
+    Returns:
+        str: The URL to the uploaded image in the S3 bucket
+    """
+    bytes = base64.b64decode(png_data)
+    with NamedTemporaryFile(mode="wb", suffix=".png") as temp_file:
+        temp_file.write(bytes)
+        temp_file.flush()
+        # Upload the PNG file to the S3 bucket
+        return rp_upload_image(job_id, temp_file.name)
+
 if get_bool_env("SAVE_TO_S3", False):
     s3_url_cache = {}
 def process_output_images(outputs, job_id):
@@ -675,10 +695,13 @@ def handler(job):
                 try:
                     # SDAPI does not give us image names, only image data
                     images = []
-                    for i, image in enumerate(result["images"]):
+                    for i, base64_encoded_png_data in enumerate(result["images"]):
+                        fake_job_id = uuid.uuid4().hex # This serves as the unique path within the S3 bucket, so it must be something random
+                        url = upload_png_to_s3(fake_job_id, base64_encoded_png_data) if SAVE_TO_S3 else f"data:image/png;base64,{base64_encoded_png_data}"
+                        assert url.startswith("https:") or url.startswith("data:"), f"Invalid URL: {url}"
                         images.append({
                             "name": f"image_{i:04d}.png",
-                            "image": image
+                            "url": url,
                         })
                     if not images:
                         raise ValueError("No images generated")
