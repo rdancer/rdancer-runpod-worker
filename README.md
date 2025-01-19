@@ -75,6 +75,20 @@ If you use too high values, your jobs will be hanging and you will be paying for
 The defaults are geared towards the "Execution Timeout" in Edit Endpoint being used exclusively for timeout control.
 
 
+### Environment variables
+
+#### S3
+
+If you're returning a lot of images, it will be more efficient to use S3. Also there are some limits on the size of the responses in the Runpod API, and passing S3 URLs will help to stay within these limits.
+
+```
+SAVE_TO_S3 = true # defaults to false -- if set, will save to S3 and return the corresponding pre-signed https: URL, else it will return data: URIs
+AWS_REGION=eu-central-1
+AWS_ACCESS_KEY_ID = KDLTYIDEHIIBZTYQPORY
+AWS_SECRET_ACCESS_KEY = c5uqPiax6YOPvEFBF7AKT4c4Lvsd3c1Pn+2Vq9Y+
+AWS_S3_BUCKET = my-bucket
+```
+
 ### Input schema
 
 POST this to https://api.runpod.ai/v2/{{SLS_ENDPOINT_ID}}/run
@@ -88,7 +102,7 @@ POST this to https://api.runpod.ai/v2/{{SLS_ENDPOINT_ID}}/run
       "images": [
         {
           "name": "foo.png", // only PNG is supported by rp_handler.py at the moment
-          "image": <base64 encoded PNG image>
+          "url": "data: or https:" // data: if SAVE_TO_S3 is false, https: if SAVE_TO_S3 is true
         },
         ...
       ]
@@ -146,7 +160,7 @@ A successfully *completed* job will return a JSON object like this:
       // there is either "images" or "log" or both, and sometimes other keys such as "error", "satatus", etc.
       "images": [
         {
-          "image": "iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAIAAAB7...",
+          "url": "data: or https:", // data: if SAVE_TO_S3 is false, https: if SAVE_TO_S3 is true
           "name": "image_0000.png"
         },
         ...

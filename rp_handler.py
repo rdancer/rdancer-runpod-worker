@@ -190,6 +190,17 @@ SERVER_HOST = {
 # see https://docs.runpod.io/docs/handler-additional-controls#refresh-worker
 REFRESH_WORKER = get_bool_env("REFRESH_WORKER", False)
 
+SAVE_TO_S3 = get_bool_env("SAVE_TO_S3", False)
+if SAVE_TO_S3:
+    print("SAVE_TO_S3 is enabled, loading AWS credentials...")
+    AWS_REGION = os.getenv("AWS_REGION")
+    AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+    AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+    AWS_S3_BUCKET = os.getenv("AWS_S3_BUCKET")
+    assert AWS_REGION is not None, "AWS_REGION must be set"
+    assert AWS_ACCESS_KEY_ID is not None, "AWS_ACCESS_KEY_ID must be set"
+    assert AWS_SECRET_ACCESS_KEY is not None, "AWS_SECRET_ACCESS_KEY must be set"
+    assert AWS_S3_BUCKET is not None, "AWS_S3_BUCKET must be set"
 
 def validate_input(job_input):
     """
@@ -416,21 +427,44 @@ def get_comfyui_history(job_id):
         return json.loads(response.read())
 
 
-def base64_encode(img_path):
+def image_to_data_url(img_path):
     """
-    Returns base64 encoded image.
+    Returns data: URL representation of an image
 
     Args:
         img_path (str): The path to the image
 
     Returns:
-        str: The base64 encoded image
+        str: The image encoded as data: URL
     """
     with open(img_path, "rb") as image_file:
         encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
-        return f"{encoded_string}"
+        mime_type = guess_mime_type(img_path)
+        url = f"data:{mime_type};base64,{encoded_string}"
+        return url
 
+def rp_upload_image(job_id, local_image_path):
+    """
+    Wrapper to make the programming interface sane.
 
+    The function we are wrapping inexplicably uses three (3) environment variables, none of which are named what they should be, and the first of which is constructed. It is as if someone took a shell script fragment, and without any thinking implemented it in Python. We are wrapping this function to make the programming interface more sane.
+    """
+    wrappee = rp_upload.upload_image
+
+    # Convert the sane variables to the insane ones
+    # Cf. https://github.com/runpod/runpod-python/blob/main/docs/serverless/utils/rp_upload.md#bucket-credentials
+    os.environ["BUCKET_ENDPOINT_URL"] = f"https://s3.{AWS_REGION}.amazonaws.com"
+    os.environ["BUCKET_ACCESS_KEY_ID"] = AWS_ACCESS_KEY_ID
+    os.environ["BUCKET_SECRET_ACCESS_KEY"] = AWS_SECRET_ACCESS_KEY
+
+    # This method is simply wrong, so we monkeypatch it in the simplest way possible
+    rp_upload.extract_region_from_url = lambda url: AWS_REGION
+
+    url = wrappee(job_id, local_image_path, bucket_name=AWS_S3_BUCKET)
+    return url
+
+if get_bool_env("SAVE_TO_S3", False):
+    s3_url_cache = {}
 def process_output_images(outputs, job_id):
     """
     This function takes the "outputs" from image generation and the job ID,
@@ -455,12 +489,14 @@ def process_output_images(outputs, job_id):
       defaulting to "/comfyui/output" if not set.
     - It then iterates through the outputs to find the filenames of the generated images.
     - After confirming the existence of the image in the output folder, it checks if the
-      AWS S3 bucket is configured via the BUCKET_ENDPOINT_URL environment variable.
-    - If AWS S3 is configured, it uploads the image to the bucket and returns the URL.
-    - If AWS S3 is not configured, it encodes the image in base64 and returns the string.
+      SAVE_TO_S3 environment variable.
+    - If it is set and is truthy, it uploads the image to the bucket and returns the URL.
+    - If it is is falsy or unset, it encodes the image in base64 and returns a data: URL.
     - If the image file does not exist in the output folder, it returns an error status
       with a message indicating the missing image file.
     """
+    class ImageOutputError(Exception):
+        pass
 
     if SERVICE_TYPE == "comfyui":
         # The path where ComfyUI stores the generated images
@@ -492,49 +528,52 @@ def process_output_images(outputs, job_id):
 
     print(f"{worker_name} - gathering output images")
 
-    encoded_output_images = []
-    for local_image_path in output_images:
-        print(f"{worker_name} - {local_image_path}")
+    try:
+        encoded_output_images = []
+        for local_image_path in output_images:
+            print(f"{worker_name} - {local_image_path}")
 
-        # The image is in the output folder
-        if os.path.exists(local_image_path):
-            base_name = os.path.basename(local_image_path)
-            if get_bool_env("BUCKET_ENDPOINT_URL", False):
-                # URL to image in AWS S3
-                image = rp_upload.upload_image(job_id, local_image_path)
-                print(
-                    f"{worker_name} - the image {base_name} was generated and uploaded to AWS S3"
-                )
-            else:
-                # base64 image
+            # The image is in the output folder
+            if os.path.exists(local_image_path):
+                base_name = os.path.basename(local_image_path)
+                if get_bool_env("SAVE_TO_S3", False):
+                    # URL to image in AWS S3
+                    # Most of the time, the image has previously been already processed
+                    if local_image_path in s3_url_cache:
+                        url = s3_url_cache[local_image_path]
+                    else:
+                        url = rp_upload_image(job_id, local_image_path)
+                        s3_url_cache[local_image_path] = url
+                        print(
+                            f"{worker_name} - the image {base_name} was generated and uploaded to AWS S3: {url}"
+                        )
+                else:
+                    # data: URL
+                    url = image_to_data_url(local_image_path)
+                    print(
+                        f"{worker_name} - the image {base_name} was generated and converted to data URL: {url[:40]+'...' if len(url)>42 else url}"
+                    )
                 encoded_output_images.append({
                     "name": base_name,
-                    "image": base64_encode(local_image_path)
+                    "url": url
                 })
-                print(
-                    f"{worker_name} - the image {base_name} was generated and converted to base64"
-                )
-    if encoded_output_images:
-        print(f"{worker_name} - Success: sending image{'s' if len(encoded_output_images)>1 else ''}: {[f['name'] for f in encoded_output_images]}")
-        ret = {
-            "status": "success",
-            "images": encoded_output_images,
-        }
-        if "all_outputs" in locals():
-            ret["outputs"] = all_outputs
-        return ret
-    else:
-        if output_images:
-            message = f"Images generated, but none exist in the output folder: {output_images}"
+        if encoded_output_images:
+            print(f"{worker_name} - Success: sending image{'s' if len(encoded_output_images)>1 else ''}: {[f['name'] for f in encoded_output_images]}")
+            ret = {
+                "status": "success",
+                "images": encoded_output_images,
+                **({"outputs": all_outputs} if "all_outputs" in locals() else {}),
+            }
+            return ret
         else:
-            message = "No images were generated"
-        print(f"{worker_name} - {message}")
+            raise ImageOutputError(f"Images generated, but none exist in the output folder: {output_images}" if output_images else "No images generated")
+    except Exception as e:
+        print(f"{worker_name} - Error -- {e.__class__.__name__}: {e}")
         ret = {
             "status": "error",
-            "error": message,
+            "error": f"{e.__class__.__name__}: {str(e)}",
+            **({"outputs": all_outputs} if "all_outputs" in locals() else {}),
         }
-        if "all_outputs" in locals():
-            ret["outputs"] = all_outputs
         return ret
 
 class OutputStreamer:
@@ -558,7 +597,15 @@ class OutputStreamer:
                             yield image
         except Exception as e:
             print(f"{worker_name} - Error streaming output for job {self.job_id} in directory {self.output_directory_absolute_path}: {e}")
-
+    
+    def get_all_images(self):
+        """
+        Return any previously returned images, plus any new images that have been generated since the last call to get_new_images().
+        """
+        for _ in self.get_new_images():
+            pass
+        with self.output_images_lock:
+            return [self.output_images[image_name] for image_name in self.output_images]
 
 def handler(job):
     """
@@ -674,11 +721,8 @@ def handler(job):
                     elif job_status["status"] == "SUCCEEDED":
                         output_directory_absolute_path = job_status["outdir"]
                         if "output_streamer" in locals():
-                            images = [image for image in output_streamer.get_new_images()]
-                            if images:
-                                images_result = { "images": [image for image in output_streamer.get_new_images()], "streamed": True }
-                            else:
-                                images_result = { "streamed": True}
+                            images = output_streamer.get_all_images()
+                            images_result = { **({"images": images} if images else {}), "streamed": True }
                         else:
                             images_result = process_output_images(output_directory_absolute_path, job_id)
                         break
