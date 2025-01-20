@@ -14,10 +14,69 @@ import traceback
 import threading
 from datetime import datetime
 from tempfile import NamedTemporaryFile
-
+import re
 
 class InternalServerError(Exception):
     pass
+
+class JobTimestampCallback:
+    """
+    A class that handles job timestamping.
+    """
+    def __init__(self):
+        self.timestamp = datetime.now()
+    
+    def set_job_id(self, job_id: str, is_fake=False) -> None:
+        """
+        Set the job id and store the timestamp in the database.
+
+        The `is_fake` argument is ignored in this implementation.
+        """
+        JobTimestamp.database[job_id] = self.timestamp # This leaks about a word per job. That is fine.
+
+class JobTimestamp:
+    """
+    A class that handles job timestamping.
+
+    The job timestamp is captured as soon as a job is received.
+
+    At some later point, the job id is obtained and stored by the class.
+
+    Later the timestamp can be retrieved by any method that is interested in knowing the timestamp of the job, without the timestamp having to be passed around as a parameter.
+
+    This class is not to be instantiated. It is a static class.
+    """
+    def __init__(self):
+        raise Exception("This class is not to be instantiated. It is a static class.")
+
+
+    database = {} # job_id -> timestamp
+
+    @staticmethod
+    def start_job():
+        """
+        Start a job and capture the timestamp.
+
+        Returns:
+            a class with a callback set_job_id(), which will store the job id in the database
+        """
+        return JobTimestampCallback()
+
+    @staticmethod
+    def get_timestamp(job_id: str) -> datetime:
+        """
+        Get the timestamp of a job.
+
+        Args:
+            job_id (str): The job id of the job whose timestamp is to be retrieved
+
+        Returns:
+            datetime: The timestamp of the job
+        """
+        timestamp = JobTimestamp.database.get(job_id)
+        if timestamp is None:
+            raise ValueError(f"Job {job_id} not found in database")
+        return timestamp
 
 class LastLog(str):
     """
@@ -242,8 +301,15 @@ def validate_input(job_input):
                 "'images' must be a list of objects with 'name' and 'image' keys",
             )
 
+    metadata = job_input.get("metadata", {})
+    if not isinstance(metadata, dict):
+        return None, "'metadata' must be a dictionary"
+    if "user" in metadata:
+        if not isinstance(metadata["user"], str):
+            return None, "'metadata.user' must be a string"
+
     # Return validated data and no error
-    return {"workflow": workflow, "images": images}, None
+    return {"workflow": workflow, "images": images, "metadata": metadata}, None
 
 
 def check_server(url, retries=SERVER_API_AVAILABLE_MAX_RETRIES, delay=SERVER_API_AVAILABLE_INTERVAL_MS):
@@ -445,15 +511,88 @@ def image_to_data_url(img_path):
         url = f"data:{mime_type};base64,{encoded_string}"
         return url
 
-def rp_upload_image(job_id, local_image_path):
+def is_video(file_path: str) -> bool:
     """
-    Wrapper to make the programming interface sane.
+    Check if a file is a video
 
-    The function we are wrapping inexplicably uses three (3) environment variables, none of which are named what they should be, and the first of which is constructed. It is as if someone took a shell script fragment, and without any thinking implemented it in Python. We are wrapping this function to make the programming interface more sane.
+    Args:
+        file_path (str): The path to the file
+
+    Returns:
+        bool: True if the file is a video, False otherwise
+    """
+    VIDEO_EXTENSIONS = [".mp4", ".webm"]
+    return any(file_path.lower().endswith(ext) for ext in VIDEO_EXTENSIONS)
+
+def fs_safe(s: str) -> str:
+    """
+    Make a string safe for use in a filesystem
+
+    Args:
+        s (str): The string to make safe
+    
+    Returns:
+        str: The safe string
+    """
+    ss = re.sub(r'[^\w\s-]', '_', s).strip()
+    if len(ss) > 255:
+        ss = ss[:255]
+    while ss.endswith("_"):
+        ss = ss[:-1]
+    while ss.startswith("_"):
+        ss = ss[1:]
+    if len(ss) < 1:
+        ss = "__empty__"
+    if s != ss:
+        print(f"Warning: string {s} was sanitized to {ss}")
+    return ss
+
+def rp_upload_image(job_id, local_image_path, metadata: dict = {}):
+    """
+    Save in S3.
+
+    Args:
+        job_id (str): The ID of the job
+        local_image_path (str): The path to the image
+        metadata (dict): We use this to construct the path-like prefix for the S3 object's key. The metadata should contain the user's name. If the metadata does not contain the user's name, we default to "no_user".
+
+    We use the following folder structure:
+    
+    Root
+    └── users
+        └── marius
+            └── output
+                ├── 1111-deforum
+                │   └── generating-image-sequence
+                ├── automatic1111
+                │   └── generating-image
+                └── comfyui
+                    ├── generating-image
+                    └── generating-video
+    
+    Each job is saved in its own folder which is the timestamp of the job.
+
+    We use the RunPod SDK's S3 upload function, because we are masochists, love bad library code, becuase the fine developers at RunPod use some nice optimalisations, and most importantly because their version is tested so that the quirks of boto3 and the quirks of RunPod play together nicely -- which we cannot otherwise guarantee. Having said that, their code looks like someone took a shell script fragment, and without any thinking implemented it in Python, which is probably exactly what happened.
     """
     wrappee = rp_upload.upload_image
+    try:
+        user = metadata["user"]
+    except:
+        user = "no_user"
+    TIMESTAMP_FORMAT = "%Y-%m-%d-%H-%M-%S" # 2024-12-24-17-45-33
+    timestamp = JobTimestamp.get_timestamp(job_id).strftime(TIMESTAMP_FORMAT)
 
-    # Convert the sane variables to the insane ones
+
+    # Ideally the sanitization is a no-op. The helper function prints a warning if the sanitization is not a no-op.
+    path_within_bucket = f"""users/{fs_safe(user)}/output/{
+                                {
+                                    "comfyui": f"comfyui/generating-{'video' if is_video(local_image_path) else 'image'}",
+                                    "deforum": "1111-deforum/generating-image-sequence",
+                                    "a1111": "automatic1111/generating-image",
+                                }[SERVICE_TYPE]
+                            }/{fs_safe(timestamp)}"""
+
+    # Convert the sane variables to the insane ones the wrappee expects
     # Cf. https://github.com/runpod/runpod-python/blob/main/docs/serverless/utils/rp_upload.md#bucket-credentials
     os.environ["BUCKET_ENDPOINT_URL"] = f"https://s3.{AWS_REGION}.amazonaws.com"
     os.environ["BUCKET_ACCESS_KEY_ID"] = AWS_ACCESS_KEY_ID
@@ -462,10 +601,10 @@ def rp_upload_image(job_id, local_image_path):
     # This method is simply wrong, so we monkeypatch it in the simplest way possible
     rp_upload.extract_region_from_url = lambda url: AWS_REGION
 
-    url = wrappee(job_id, local_image_path, bucket_name=AWS_S3_BUCKET)
+    url = wrappee(path_within_bucket, local_image_path, bucket_name=AWS_S3_BUCKET)
     return url
 
-def upload_png_to_s3(job_id: str, png_data: str) -> str:
+def upload_png_to_s3(job_id: str, png_data: str, metadata: dict) -> str:
     """
     Upload a PNG image to an S3 bucket
 
@@ -481,11 +620,11 @@ def upload_png_to_s3(job_id: str, png_data: str) -> str:
         temp_file.write(bytes)
         temp_file.flush()
         # Upload the PNG file to the S3 bucket
-        return rp_upload_image(job_id, temp_file.name)
+        return rp_upload_image(job_id, temp_file.name, metadata)
 
 if get_bool_env("SAVE_TO_S3", False):
     s3_url_cache = {}
-def process_output_images(outputs, job_id):
+def process_output_images(outputs, job_id, metadata):
     """
     This function takes the "outputs" from image generation and the job ID,
     then determines the correct way to return the image, either as a direct URL
@@ -562,7 +701,7 @@ def process_output_images(outputs, job_id):
                     if local_image_path in s3_url_cache:
                         url = s3_url_cache[local_image_path]
                     else:
-                        url = rp_upload_image(job_id, local_image_path)
+                        url = rp_upload_image(job_id, local_image_path, metadata)
                         s3_url_cache[local_image_path] = url
                         print(
                             f"{worker_name} - the image {base_name} was generated and uploaded to AWS S3: {url}"
@@ -597,9 +736,10 @@ def process_output_images(outputs, job_id):
         return ret
 
 class OutputStreamer:
-    def __init__(self, output_directory_absolute_path, job_id):
+    def __init__(self, output_directory_absolute_path, job_id, metadata):
         self.output_directory_absolute_path = output_directory_absolute_path
         self.job_id = job_id
+        self.metadata = metadata
         self.output_images = {}
         self.output_images_lock = threading.Lock()
 
@@ -608,7 +748,7 @@ class OutputStreamer:
         This is a very ingenious wrapper around process_output_images() that yields any new images as they are generated.
         """
         try:
-            images_result = process_output_images(self.output_directory_absolute_path, self.job_id)
+            images_result = process_output_images(self.output_directory_absolute_path, self.job_id, self.metadata)
             if images_result["status"] == "success":
                 for image in images_result["images"]:
                     with self.output_images_lock:
@@ -641,6 +781,7 @@ def handler(job):
         dict: A dictionary containing either an error message or a success status with generated images.
     """
     try:
+        timestamp = JobTimestamp.start_job()
         job_input = job["input"]
 
         # Make sure that the input is valid
@@ -652,6 +793,7 @@ def handler(job):
         # Extract validated data
         workflow = validated_data["workflow"]
         images = validated_data.get("images")
+        metadata = validated_data.get("metadata")
 
         # Make sure that the ComfyUI API is available
         check_server(
@@ -674,12 +816,14 @@ def handler(job):
             lastlog, queued_workflow = queue_workflow(workflow)
             if SERVICE_TYPE == "comfyui":
                 job_id = queued_workflow["prompt_id"]
+                timestamp.set_job_id(job_id)
             elif SERVICE_TYPE == "deforum":
                 if "error" in queued_workflow:
                     # queued_workflow is already the error response
                     yield queued_workflow
                     return
                 job_id = queued_workflow["job_ids"][0]
+                timestamp.set_job_id(job_id)
             elif SERVICE_TYPE == "a1111":
                 # The sdapi API is synchronous, so we just return the result here straight away
 
@@ -697,7 +841,8 @@ def handler(job):
                     images = []
                     for i, base64_encoded_png_data in enumerate(result["images"]):
                         fake_job_id = uuid.uuid4().hex # This serves as the unique path within the S3 bucket, so it must be something random
-                        url = upload_png_to_s3(fake_job_id, base64_encoded_png_data) if SAVE_TO_S3 else f"data:image/png;base64,{base64_encoded_png_data}"
+                        timestamp.set_job_id(fake_job_id, is_fake=True)
+                        url = upload_png_to_s3(fake_job_id, base64_encoded_png_data, metadata) if SAVE_TO_S3 else f"data:image/png;base64,{base64_encoded_png_data}"
                         assert url.startswith("https:") or url.startswith("data:"), f"Invalid URL: {url}"
                         images.append({
                             "name": f"image_{i:04d}.png",
@@ -727,7 +872,7 @@ def handler(job):
 
                     # Exit the loop if we have found the history or encountered an error
                     if job_id in history and history[job_id].get("outputs"):
-                        images_result = process_output_images(history[job_id].get("outputs"), job_id)
+                        images_result = process_output_images(history[job_id].get("outputs"), job_id, metadata)
                         break
                     else:
                         try:
@@ -747,7 +892,7 @@ def handler(job):
                             images = output_streamer.get_all_images()
                             images_result = { **({"images": images} if images else {}), "streamed": True }
                         else:
-                            images_result = process_output_images(output_directory_absolute_path, job_id)
+                            images_result = process_output_images(output_directory_absolute_path, job_id, metadata)
                         break
                     elif STREAM_OUTPUT:
                         stream_res = {}
@@ -756,7 +901,7 @@ def handler(job):
                                 output_directory_absolute_path = job_status["outdir"]
                                 if not output_directory_absolute_path:
                                     raise ValueError("Output directory not found")
-                                output_streamer = OutputStreamer(output_directory_absolute_path, job_id)
+                                output_streamer = OutputStreamer(output_directory_absolute_path, job_id, metadata)
                             images = [image for image in output_streamer.get_new_images()]
                             if images:
                                 stream_res = { "images": images }

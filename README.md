@@ -105,7 +105,10 @@ POST this to https://api.runpod.ai/v2/{{SLS_ENDPOINT_ID}}/run
           "url": "data: or https:" // data: if SAVE_TO_S3 is false, https: if SAVE_TO_S3 is true
         },
         ...
-      ]
+      ],
+      "metadata": {
+          "user": "rdancer" // the value ought to be unique, and file-system safe; used to construct the "path" prefix of the S3 object key
+      }
   }
 }
 ```

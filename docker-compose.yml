@@ -2,7 +2,7 @@ version: '3.7'
 
 services:
   rdancer-comfyui-worker:
-    image: rdancer/runpod-worker-comfyui:0.0.33rc0
+    image: rdancer/runpod-worker-comfyui:0.0.34rc1
     build:
       context: .
       args:
@@ -20,7 +20,7 @@ services:
       - "22:22"        # SSH port
 
   rdancer-deforum-worker:
-    image: rdancer/runpod-worker-deforum:0.0.33rc4
+    image: rdancer/runpod-worker-deforum:0.0.34rc13
     build:
       context: .
       args:
@@ -38,7 +38,7 @@ services:
     restart: always
 
   rdancer-a1111-worker:
-    image: rdancer/runpod-worker-a1111:0.0.33rc0
+    image: rdancer/runpod-worker-a1111:0.0.34rc2
     build:
       context: .
       args:
