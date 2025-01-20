@@ -547,7 +547,7 @@ def fs_safe(s: str) -> str:
         print(f"Warning: string {s} was sanitized to {ss}")
     return ss
 
-def rp_upload_image(job_id, local_image_path, metadata: dict = {}):
+def rp_upload_image(job_id, local_image_path, metadata: dict = {}, store_metadata: bool = False) -> str:
     """
     Save in S3.
 
@@ -582,7 +582,6 @@ def rp_upload_image(job_id, local_image_path, metadata: dict = {}):
     TIMESTAMP_FORMAT = "%Y-%m-%d-%H-%M-%S" # 2024-12-24-17-45-33
     timestamp = JobTimestamp.get_timestamp(job_id).strftime(TIMESTAMP_FORMAT)
 
-
     # Ideally the sanitization is a no-op. The helper function prints a warning if the sanitization is not a no-op.
     path_within_bucket = f"""users/{fs_safe(user)}/output/{
                                 {
@@ -592,16 +591,28 @@ def rp_upload_image(job_id, local_image_path, metadata: dict = {}):
                                 }[SERVICE_TYPE]
                             }/{fs_safe(timestamp)}"""
 
-    # Convert the sane variables to the insane ones the wrappee expects
     # Cf. https://github.com/runpod/runpod-python/blob/main/docs/serverless/utils/rp_upload.md#bucket-credentials
-    os.environ["BUCKET_ENDPOINT_URL"] = f"https://s3.{AWS_REGION}.amazonaws.com"
-    os.environ["BUCKET_ACCESS_KEY_ID"] = AWS_ACCESS_KEY_ID
-    os.environ["BUCKET_SECRET_ACCESS_KEY"] = AWS_SECRET_ACCESS_KEY
+    aws_credentials = {
+        "endpointUrl": f"https://s3.{AWS_REGION}.amazonaws.com",
+        "accessId": AWS_ACCESS_KEY_ID,
+        "accessSecret": AWS_SECRET_ACCESS_KEY,
+    }
 
     # This method is simply wrong, so we monkeypatch it in the simplest way possible
     rp_upload.extract_region_from_url = lambda url: AWS_REGION
 
-    url = wrappee(path_within_bucket, local_image_path, bucket_name=AWS_S3_BUCKET)
+    # url = wrappee(path_within_bucket, local_image_path, bucket_name=AWS_S3_BUCKET)
+    url = rp_upload.upload_file_to_bucket(
+        file_name=os.path.basename(local_image_path),
+        file_location=local_image_path,
+        bucket_creds=aws_credentials,
+        bucket_name=AWS_S3_BUCKET,
+        prefix=path_within_bucket,
+        extra_args={
+            "ContentType": guess_mime_type(local_image_path),
+            **({"Metadata": metadata} if store_metadata else {})
+        },
+    )
     return url
 
 def upload_png_to_s3(job_id: str, png_data: str, metadata: dict) -> str:
@@ -889,7 +900,7 @@ def handler(job):
                     elif job_status["status"] == "SUCCEEDED":
                         output_directory_absolute_path = job_status["outdir"]
                         if "output_streamer" in locals():
-                            images = output_streamer.get_all_images()
+                            images = output_streamer.get_new_images()
                             images_result = { **({"images": images} if images else {}), "streamed": True }
                         else:
                             images_result = process_output_images(output_directory_absolute_path, job_id, metadata)
