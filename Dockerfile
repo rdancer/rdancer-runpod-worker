@@ -1,21 +1,17 @@
-FROM timpietruskyblibla/runpod-worker-comfy:3.1.2-base
+FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y \
-bash \
-openssh-server \
-libgl1 \
-&& rm -rf /var/lib/apt/lists/*
+# Set the working directory
+WORKDIR /app
 
-# Add ssh key
-RUN mkdir -p /root/.ssh
-RUN chmod 700 /root/.ssh
-COPY id_rsa.pub /root/.ssh/authorized_keys
-RUN chmod 600 /root/.ssh/authorized_keys
+# Copy everything not listed in .dockerignore into the container
+COPY start.sh requirements.txt rp_handler.py ./
+RUN chmod +x start.sh
+
+# Install the runpod package
+RUN pip install --no-cache-dir -r requirements.txt \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm requirements.txt
 
 
-
-# Modified files from the original repo
-COPY start.sh rp_handler.py /
-RUN chmod +x /start.sh
-
-CMD ["/start.sh"]
+# Set the command to execute the handler
+CMD ["/app/start.sh"]
