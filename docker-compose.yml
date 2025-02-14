@@ -20,7 +20,7 @@ services:
       - "22:22"        # SSH port
 
   rdancer-deforum-worker:
-    image: rdancer/runpod-worker-deforum:0.0.35rc0
+    image: rdancer/runpod-worker-deforum:0.0.39rc24
     build:
       context: .
       args:

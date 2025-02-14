@@ -1,3 +1,4 @@
+from signal import signal
 import uuid
 import runpod
 from runpod.serverless.utils import rp_upload
@@ -15,9 +16,49 @@ import threading
 from datetime import datetime
 from tempfile import NamedTemporaryFile
 import re
+import tqdm
+
 
 class InternalServerError(Exception):
     pass
+
+class JobCancelledException(Exception):
+    pass
+
+def raise_for_cancel(runpod_job_id: str):
+    """
+    Checks if a job has been cancelled, deletes the cancellation signal file,
+    and raises JobCancelledException if the job is cancelled.
+
+    :param job_id: The ID of the job being checked.
+    :raises JobCancelledException: If the job was cancelled by the user.
+    """
+    if not runpod_job_id:
+        print(f"Warning: Runpod Job ID is missing.")
+        return
+
+    CANCEL_DIR = "/workspace/tasks/cancel/ids"
+    try:
+        cancel_path = os.path.join(CANCEL_DIR, fs_safe(runpod_job_id, raise_=True))
+    except UnsafeInputError:
+        print(f"Warning: Runpod Job ID is filesystem-unsafe: {runpod_job_id}")
+        return
+
+    if os.path.exists(cancel_path):
+        # Get the timestamp of when cancellation was requested
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(os.path.getmtime(cancel_path)))
+
+        # Remove the cancellation file to clean up
+        try:
+            os.remove(cancel_path)
+        except:
+            print(f"Warning: Failed to remove cancellation file: {cancel_path}")
+            pass
+
+        # Raise the exception with a simple message
+        message = f"Cancelling job '{runpod_job_id}' as requested at {timestamp}."
+        print(message)
+        raise JobCancelledException(message)
 
 class JobTimestampCallback:
     """
@@ -263,6 +304,22 @@ if SAVE_TO_S3:
     assert AWS_SECRET_ACCESS_KEY is not None, "AWS_SECRET_ACCESS_KEY must be set"
     assert AWS_S3_BUCKET is not None, "AWS_S3_BUCKET must be set"
 
+def construct_output_path_stub(deforum_status_json):
+    """
+    Construct the output path stub for the Deform job based on the status JSON.
+
+    Before the execution starts, the output path is unknown. Once the job starts, the output path is determined. However. When `batch_name` is set in the input json, the `outdir` is that (sanitized). If it is not set, it is called `Deforum_{timestring}`. Regardless, the output files' paths all begin with `{outdir}/{timestring}`. We call this the path stub. This function reconstructs the output path stub from the output directory `outdir` and the job timestamp `timestring`.
+
+    Args:
+        deforum_status_json (dict): The status JSON of the Deform job.
+    Returns:
+        str: The constructed output path stub, or None if it couldn't yet be constructed.
+    """
+    output_directory_absolute_path = deforum_status_json.get("outdir")
+    timestring = deforum_status_json.get("timestring")
+    output_path_stub = f"{output_directory_absolute_path}/{timestring}" if output_directory_absolute_path and timestring else None
+    return output_path_stub
+
 def validate_input(job_input):
     """
     Validates the input for the handler function.
@@ -434,6 +491,25 @@ def upload_images(images):
     }
 
 
+def cancel_job(job_id: str) -> None:
+    """
+    Cancel a job with the given job ID.
+
+    Args:
+        job_id (str): The ID of the job to cancel.
+    """
+    if SERVICE_TYPE == "deforum":
+        api_url = f"http://{SERVER_HOST}/deforum_api/jobs/{job_id}"
+        try:
+            req = urllib.request.Request(api_url, method="DELETE")
+            res = urllib.request.urlopen(req)
+            ret_data = json.loads(res.read())
+            print(f"{worker_name} - Successfully cancelled Deforum job {job_id}: {ret_data}")
+        except urllib.error.HTTPError as e:
+            print(f"{worker_name} - Warning - Failed to cancel Deforum job {job_id} -- {e.__class__.__name__}: {e}")
+    else:
+        raise NotImplementedError(f"Cancel job not implemented for service type: {SERVICE_TYPE}")
+
 def queue_workflow(workflow):
     """
     Queue a workflow to be processed by ComfyUI
@@ -524,7 +600,10 @@ def is_video(file_path: str) -> bool:
     VIDEO_EXTENSIONS = [".mp4", ".webm"]
     return any(file_path.lower().endswith(ext) for ext in VIDEO_EXTENSIONS)
 
-def fs_safe(s: str) -> str:
+class UnsafeInputError(Exception):
+    pass
+
+def fs_safe(s: str, raise_: bool = False) -> str:
     """
     Make a string safe for use in a filesystem
 
@@ -544,10 +623,13 @@ def fs_safe(s: str) -> str:
     if len(ss) < 1:
         ss = "__empty__"
     if s != ss:
-        print(f"Warning: string {s} was sanitized to {ss}")
+        if raise_:
+            raise UnsafeInputError(f"String {s} was sanitized to {ss}")
+        else:
+            print(f"Warning: string {s} was sanitized to {ss}")
     return ss
 
-def rp_upload_image(job_id, local_image_path, metadata: dict = {}, store_metadata: bool = False) -> str:
+def rp_upload_image(job_id: str, local_image_path: str, metadata: dict = {}, store_metadata: bool = False) -> str:
     """
     Save in S3.
 
@@ -574,7 +656,30 @@ def rp_upload_image(job_id, local_image_path, metadata: dict = {}, store_metadat
 
     We use the RunPod SDK's S3 upload function, because we are masochists, love bad library code, becuase the fine developers at RunPod use some nice optimalisations, and most importantly because their version is tested so that the quirks of boto3 and the quirks of RunPod play together nicely -- which we cannot otherwise guarantee. Having said that, their code looks like someone took a shell script fragment, and without any thinking implemented it in Python, which is probably exactly what happened.
     """
-    wrappee = rp_upload.upload_image
+    def my_upload_file_to_bucket(*args, **kwargs):
+        """
+        Wrapper around the original upload_file_to_bucket to temporarily disable tqdm updates.
+
+        Why?
+        - The original implementation incorrectly updates `tqdm` with absolute byte counts instead
+        of incremental differences.
+        - Instead of refactoring the function, we monkey-patch `tqdm.update` to be a no-op just
+        during the execution of `upload_file_to_bucket`.
+        - This ensures that the function runs without issues, while preserving tqdm's normal behavior
+        for any other part of the application.
+
+        The original tqdm behavior is restored immediately after the function call.
+        """
+        file_name = args[0] if len(args) > 0 else kwargs.get("file_name", "[no file provided]")
+        print(f"{worker_name} - Uploading {file_name} to S3 - Warning: uploading with TQDM disabled, to work around a bug in the RunPod SDK")
+        original_update = tqdm.tqdm.update  # Save original tqdm update method
+        tqdm.tqdm.update = lambda *_, **__: None  # Disable tqdm updates
+
+        try:
+            return rp_upload.upload_file_to_bucket(*args, **kwargs)  # Call the original function
+        finally:
+            tqdm.tqdm.update = original_update  # Restore tqdm after execution
+
     try:
         user = metadata["user"]
     except:
@@ -601,8 +706,8 @@ def rp_upload_image(job_id, local_image_path, metadata: dict = {}, store_metadat
     # This method is simply wrong, so we monkeypatch it in the simplest way possible
     rp_upload.extract_region_from_url = lambda url: AWS_REGION
 
-    # url = wrappee(path_within_bucket, local_image_path, bucket_name=AWS_S3_BUCKET)
-    url = rp_upload.upload_file_to_bucket(
+    # We are getting reports that the images are only partially uploaded.
+    url = my_upload_file_to_bucket(
         file_name=os.path.basename(local_image_path),
         file_location=local_image_path,
         bucket_creds=aws_credentials,
@@ -646,7 +751,7 @@ def process_output_images(outputs, job_id, metadata):
         outputs (dict): A dictionary containing the outputs from image generation,
                         typically includes node IDs and their respective output data.
                         (for comfyui)
-        outputs (str): Absolute file path of the directory which contains the generated images & videos. (for deforum)
+        outputs (str): File path stub of the generated images & videos. (for deforum)
         job_id (str): The unique identifier for the job.
 
     Returns:
@@ -686,9 +791,11 @@ def process_output_images(outputs, job_id, metadata):
                 all_outputs[node_id] = node_output
                     
     elif SERVICE_TYPE == "deforum":
-        # the basename looks like "/runpod-volume/stable-diffusion-webui/outputs/img2img-images/Deforum_20241204213940"
-        # so we have to do the equivalent of "/runpod-volume/stable-diffusion-webui/outputs/img2img-images/Deforum_20241204213940"* to get all the images' paths
-        output_images = [f for f in glob.glob(f"{outputs}/*") if os.path.isfile(f)]
+        assert type(outputs) is str, "outputs must be a string when SERVICE_TYPE is deforum"
+        # the `outputs` output path stub looks like "/runpod-volume/stable-diffusion-webui/outputs/img2img-images/Deforum_foobar/20241204213940"
+        # so we have to do the equivalent of "/runpod-volume/stable-diffusion-webui/outputs/img2img-images/Deforum_foobar/20241204213940"* to get all the images' paths
+        print("DEBUG: outputs: ", outputs, "SERVICE_TYPE:", SERVICE_TYPE)
+        output_images = [f for f in glob.glob(f"{outputs}*") if os.path.isfile(f)]
         # exclude .mp4 files and .txt files
         output_images = [f for f in output_images if not f.endswith(".mp4") and not f.endswith(".txt")]
         output_images.sort(key=lambda x: os.path.basename(x))
@@ -747,8 +854,8 @@ def process_output_images(outputs, job_id, metadata):
         return ret
 
 class OutputStreamer:
-    def __init__(self, output_directory_absolute_path, job_id, metadata):
-        self.output_directory_absolute_path = output_directory_absolute_path
+    def __init__(self, output_files_path_stub, job_id, metadata):
+        self.output_files_path_stub = output_files_path_stub
         self.job_id = job_id
         self.metadata = metadata
         self.output_images = {}
@@ -759,7 +866,7 @@ class OutputStreamer:
         This is a very ingenious wrapper around process_output_images() that yields any new images as they are generated.
         """
         try:
-            images_result = process_output_images(self.output_directory_absolute_path, self.job_id, self.metadata)
+            images_result = process_output_images(self.output_files_path_stub, self.job_id, self.metadata)
             if images_result["status"] == "success":
                 for image in images_result["images"]:
                     with self.output_images_lock:
@@ -767,7 +874,7 @@ class OutputStreamer:
                             self.output_images[image["name"]] = image
                             yield image
         except Exception as e:
-            print(f"{worker_name} - Error streaming output for job {self.job_id} in directory {self.output_directory_absolute_path}: {e}")
+            print(f"{worker_name} - Error streaming output for job {self.job_id} in directory {self.output_files_path_stub}: {e}")
     
     def get_all_images(self):
         """
@@ -791,9 +898,13 @@ def handler(job):
     Returns:
         dict: A dictionary containing either an error message or a success status with generated images.
     """
+    print("handler()", job)
     try:
         timestamp = JobTimestamp.start_job()
         job_input = job["input"]
+        runpod_job_id = job.get("id")
+
+        raise_for_cancel(runpod_job_id)
 
         # Make sure that the input is valid
         validated_data, error_message = validate_input(job_input)
@@ -830,7 +941,7 @@ def handler(job):
                 timestamp.set_job_id(job_id)
             elif SERVICE_TYPE == "deforum":
                 if "error" in queued_workflow:
-                    # queued_workflow is already the error response
+                    print(f"{worker_name} - Error: queued_workflow is already the error response:", queued_workflow)
                     yield queued_workflow
                     return
                 job_id = queued_workflow["job_ids"][0]
@@ -878,6 +989,7 @@ def handler(job):
         try:
             while retries < SERVER_POLLING_MAX_RETRIES:
                 runpod.serverless.progress_update(job, {'log': lastlog.get_log(last_only=False)})
+                raise_for_cancel(runpod_job_id)
                 if SERVICE_TYPE == "comfyui":
                     history = get_comfyui_history(job_id)
 
@@ -894,25 +1006,33 @@ def handler(job):
                             pass
                 elif SERVICE_TYPE == "deforum":
                     job_status = get_deforum_job_status(job_id)
+                    output_path_stub = construct_output_path_stub(job_status)
+                    try:
+                        __index__ += 1
+                    except NameError:
+                        __index__ = 0
+                    with open(f"/tmp/{job_id}_status{__index__:06d}.json", "w") as f:
+                        f.write(json.dumps(job_status, indent=4))
+                        print(f"DEBUG: job status saved to {f.name}")
                     if job_status["status"] == "FAILED":
                         yield {"error": "Image generation failed", "full_response": job_status}
                         return
                     elif job_status["status"] == "SUCCEEDED":
-                        output_directory_absolute_path = job_status["outdir"]
                         if "output_streamer" in locals():
-                            images = output_streamer.get_new_images()
+                            images = output_streamer.get_all_images()
                             images_result = { **({"images": images} if images else {}), "streamed": True }
                         else:
-                            images_result = process_output_images(output_directory_absolute_path, job_id, metadata)
+                            assert output_path_stub, "Output directory not found even tough job is SUCCEEDED"
+                            images_result = process_output_images(output_path_stub, job_id, metadata)
                         break
                     elif STREAM_OUTPUT:
                         stream_res = {}
                         try:
                             if "output_streamer" not in locals():
-                                output_directory_absolute_path = job_status["outdir"]
-                                if not output_directory_absolute_path:
+                                if not output_path_stub:
+                                    # The output directory does not exist yet, this is expected while the job has not been started in earnest
                                     raise ValueError("Output directory not found")
-                                output_streamer = OutputStreamer(output_directory_absolute_path, job_id, metadata)
+                                output_streamer = OutputStreamer(output_path_stub, job_id, metadata)
                             images = [image for image in output_streamer.get_new_images()]
                             if images:
                                 stream_res = { "images": images }
@@ -933,20 +1053,48 @@ def handler(job):
             else:
                 yield {"error": "Max retries reached while waiting for image generation"}
                 return
+        except JobCancelledException as e:
+            raise e
         except Exception as e:
             yield {"error": f"Error waiting for image generation: {str(e)}"}
             return
         # Get the generated image and return it as URL in an AWS bucket or as base64
         result = {**images_result, "refresh_worker": REFRESH_WORKER}
+    except JobCancelledException as e:
+        if "job_id" in locals():
+            # TODO cancel ComfyUI jobs
+            cancel_job(job_id) if SERVICE_TYPE == "deforum" else None
+        result = {"status": "cancelled", "message": f"Cancelled by user - {e}"}
     except Exception as e:
         # stringify and jsonify the trackback
         traceback_str = traceback.format_exc()
         result = {"error": f"Error: {e.__class__.__name__}: {str(e)}", "traceback": traceback_str}
+    finally:
+        # Clean up
+        try:
+            s3_url_cache.pop(job_id, None)
+        except:
+            pass
+        # TODO clean up the respective output directories
+    print(f"{worker_name} - Done - {result}")
     yield result
-    return result
+    return {"status": result["status"] if "status" in result else "done"} # XXX the yield ought to be enough, why are we returning this?
 
+def init_server():
+    """
+    Initialize the server by running an empty job.
+    """
+    job = {"input": {"workflow": {}}}  # Empty job
+    print(f"{worker_name} - Initializing server {SERVICE_TYPE} by sending a dummy workflow; errors will be ignored...")
+    try:
+        for output in handler(job):
+            print("...", output)
+    except Exception as e:
+        print(f"... caught exception: {e.__class__.__name__}: {e}")
+    print(f"{worker_name} - Server {SERVICE_TYPE} initialized successfully.")
 
 # Start the handler only if this script is run directly
 if __name__ == "__main__":
+    init_server()
     runpod.serverless.start({"handler": handler, "return_aggregate_stream": True})
 
