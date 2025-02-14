@@ -497,18 +497,26 @@ def cancel_job(job_id: str) -> None:
 
     Args:
         job_id (str): The ID of the job to cancel.
+    Raiises:
+        NotImplementedError: If the cancel job functionality is not implemented for the current service type.
     """
     if SERVICE_TYPE == "deforum":
         api_url = f"http://{SERVER_HOST}/deforum_api/jobs/{job_id}"
-        try:
-            req = urllib.request.Request(api_url, method="DELETE")
-            res = urllib.request.urlopen(req)
-            ret_data = json.loads(res.read())
-            print(f"{worker_name} - Successfully cancelled Deforum job {job_id}: {ret_data}")
-        except urllib.error.HTTPError as e:
-            print(f"{worker_name} - Warning - Failed to cancel Deforum job {job_id} -- {e.__class__.__name__}: {e}")
+        req = urllib.request.Request(api_url, method="DELETE")
+    elif SERVICE_TYPE == "comfyui":
+        # The server-side code we're coding against is here: https://github.com/comfyanonymous/ComfyUI/blob/1cd6cd608086a8ff8789b747b8d4f8b9273e576e/server.py#L662
+        api_url = f"http://{SERVER_HOST}/queue"
+        data = json.dumps({"delete": [job_id]}).encode("utf-8")
+        req = urllib.request.Request(api_url, data=data, headers={"Content-Type": "application/json"}, method="POST")
     else:
         raise NotImplementedError(f"Cancel job not implemented for service type: {SERVICE_TYPE}")
+
+    try:
+        res = urllib.request.urlopen(req)
+        ret_data = json.loads(res.read())
+        print(f"{worker_name} - Successfully cancelled {SERVICE_TYPE} job {job_id}: {ret_data}")
+    except urllib.error.HTTPError as e:
+        print(f"{worker_name} - Warning - Failed to cancel {SERVICE_TYPE} job {job_id} -- {e.__class__.__name__}: {e}")
 
 def queue_workflow(workflow):
     """
@@ -1062,8 +1070,7 @@ def handler(job):
         result = {**images_result, "refresh_worker": REFRESH_WORKER}
     except JobCancelledException as e:
         if "job_id" in locals():
-            # TODO cancel ComfyUI jobs
-            cancel_job(job_id) if SERVICE_TYPE == "deforum" else None
+            cancel_job(job_id) if SERVICE_TYPE in ["comfyui", "deforum"] else None
         result = {"status": "cancelled", "message": f"Cancelled by user - {e}"}
     except Exception as e:
         # stringify and jsonify the trackback
