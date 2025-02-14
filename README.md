@@ -176,3 +176,11 @@ A successfully *completed* job will return a JSON object like this:
   "workerId": "r853qiic7qsaf3"
 }
 ```
+
+## Worker warm-up
+
+In order to get the worker in a warm state straight off the bat, we need to run a job that does (almost) nothing, but still exercises all the muscle that we need, i.e. loads model weights, initializes custom nodes, etc. If we do not do this, the first job on a fresh worker will have to do this, and the compute time will be billed to it, which is not ideal.
+
+We initialize the server by:
+1. running all jobs found in `/workspace/worker-warmup/{SERVICE_TYPE}/*.json` -- these are run in alphabetical order, i.e. `00-job-name.json`, `01-job-name.json`,... will be run in that order.
+2. if no jobs are found, we run an empty job

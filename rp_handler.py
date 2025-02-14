@@ -1089,15 +1089,44 @@ def handler(job):
 
 def init_server():
     """
-    Initialize the server by running an empty job.
+    Initialize the server by running either:
+      1. an empty job
+      2. or, if present, all jobs (alphabetically) found in /workspace/worker-warmup/{SERVICE_TYPE}/*.json
     """
-    job = {"input": {"workflow": {}}}  # Empty job
-    print(f"{worker_name} - Initializing server {SERVICE_TYPE} by sending a dummy workflow; errors will be ignored...")
-    try:
-        for output in handler(job):
-            print("...", output)
-    except Exception as e:
-        print(f"... caught exception: {e.__class__.__name__}: {e}")
+    def run_job(job):
+        print(f"{worker_name} - Running warm-up job {job} -- because it is a warm-up job, errors will be ignored...")
+        try:
+            for output in handler(job):
+                print("...", output)
+        except Exception as e:
+            print(f"... caught exception: {e.__class__.__name__}: {e}")
+
+    warmup_dir = f"/workspace/worker-warmup/{SERVICE_TYPE}"
+    jobs_to_run = []
+    
+    # Check if the directory exists and has job files
+    if os.path.isdir(warmup_dir):
+        jobs = sorted(glob.glob(os.path.join(warmup_dir, "*.json")))
+        if jobs:
+            print(f"{worker_name} - Initializing server {SERVICE_TYPE} by running {len(jobs)} jobs...")
+            for job_file in jobs:
+                try:
+                    with open(job_file, "r") as f:
+                        jobs_to_run.append(json.load(f))
+                except Exception as e:
+                    print(f"... error processing {job_file}: {e.__class__.__name__}: {e}")
+    else:
+        print(f"{worker_name} - Warm-up directory {warmup_dir} not found.")
+
+    # If no valid jobs were found, add the dummy job
+    if not jobs_to_run:
+        print(f"{worker_name} - Using dummy workflow for initialization.")
+        jobs_to_run.append({"input": {"workflow": {}}})
+
+    # Run all gathered jobs
+    for job in jobs_to_run:
+        run_job(job)
+
     print(f"{worker_name} - Server {SERVICE_TYPE} initialized successfully.")
 
 # Start the handler only if this script is run directly
