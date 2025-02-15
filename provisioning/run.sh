@@ -33,5 +33,5 @@
 
 SCRIPT_PATH=/opt/ai-dock/bin/supervisor-storagemonitor.sh
 echo -n "Neutering Storage Monitor: $SCRIPT_PATH..."
-echo '#!/bin/bash' > "$SCRIPT_PATH"
+echo '#!/usr/bin/sleep infinity' > "$SCRIPT_PATH"
 echo done.
