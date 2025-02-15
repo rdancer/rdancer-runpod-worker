@@ -17,6 +17,8 @@ from datetime import datetime
 from tempfile import NamedTemporaryFile
 import re
 import tqdm
+import subprocess
+from typing import Iterator
 
 
 class InternalServerError(Exception):
@@ -783,7 +785,7 @@ def process_output_images(outputs, job_id, metadata):
 
     if SERVICE_TYPE == "comfyui":
         # The path where ComfyUI stores the generated images
-        OUTPUT_PATH = os.environ.get("COMFY_OUTPUT_PATH") or os.environ.get("WEBUI_OUTPUT_PATH") or "/comfyui/output"
+        OUTPUT_PATH = os.environ.get("COMFY_OUTPUT_PATH") or os.environ.get("WEBUI_OUTPUT_PATH") or "/workspace/comfyui/output"
 
         output_images = []
         all_outputs = {}
@@ -913,6 +915,22 @@ def handler(job):
         runpod_job_id = job.get("id")
 
         raise_for_cancel(runpod_job_id)
+
+        if "task" in job_input:
+            # This is a task, not a workflow
+            command = job_input.get("task", {}).get("command")
+            args = job_input.get("task", {}).get("args", [])
+            if command == "cleanup_old_files":
+                try:
+                    for line in _cleanup_old_files_for_this_service():
+                        yield {"log": line}
+                        raise_for_cancel(runpod_job_id)
+                except Exception as e:
+                    yield {"error": f"Error cleaning old files: {e.__class__.__name__}: {e}"}
+                yield {"status": "success"}
+            else:
+                yield {"error": f"Unknown task: {command}"}
+            return
 
         # Make sure that the input is valid
         validated_data, error_message = validate_input(job_input)
@@ -1128,6 +1146,94 @@ def init_server():
         run_job(job)
 
     print(f"{worker_name} - Server {SERVICE_TYPE} initialized successfully.")
+
+def _cleanup_old_files_for_this_service(max_age_seconds: int = 86400) -> Iterator[str]:
+    """
+    Wrapper for cleanup_old_files() that automatically sets the root_dir to the appropriate location for the given service type.
+"""
+    comfyui_output_path = os.environ.get("COMFY_OUTPUT_PATH") or "/workspace/comfyui/output"
+    webui_output_path = os.environ.get("WEBUI_OUTPUT_PATH") or "/workspace/stable-diffusion-webui/outputs"
+
+    root_dir = {
+        "comfyui": comfyui_output_path,
+        "deforum": webui_output_path,
+        "a1111": webui_output_path,
+    }[SERVICE_TYPE]
+    yield from cleanup_old_files(root_dir, max_age_seconds)
+
+def cleanup_old_files(root_dir: str, max_age_seconds: int = 86400) -> Iterator[str]:
+    """
+    Removes files, symlinks, special files, and empty directories under `root_dir` that haven't been
+    modified in at least `max_age_seconds` seconds. Files are removed using `rm` (without -f) so that
+    standard file permissions are respected (i.e. protected files are left intact). Directories are
+    removed using `rmdir` (which will only remove empty directories).
+
+    This function uses GNU find with depth-first traversal and the following find expression:
+      find {root_dir} -P -depth ! -newermt {cutoff_str} \
+         \( -not -type d -exec rm {} \; -or -exec rmdir {} \; \)
+    Note:
+      - This command will remove not only regular files but also special files (such as device files).
+      - It respects standard file permissions, so non-writable files will not be removed.
+      - Directories will only be removed if empty.
+      - Requires GNU find.
+      
+    Args:
+        root_dir (str): The directory under which to search for old files.
+        max_age_seconds (int, optional): The age threshold in seconds. Files not modified
+            within the last `max_age_seconds` seconds will be removed. Defaults to 86400 (1 day).
+    
+    Returns:
+        Iterator[str]: An iterator yielding each line of output from the find command (both stdout and stderr)
+        as the command is executed.
+
+    Raises:
+        subprocess.CalledProcessError: If the find command exits with a non-zero exit code.
+    """
+    cutoff = time.time() - max_age_seconds
+    cutoff_str = datetime.fromtimestamp(cutoff).isoformat()
+
+    cmd = [
+        "find", root_dir,
+        "-P",                         # Do not follow symbolic links.
+        "-depth",                     # Process directory contents before the directory itself.
+        "!", "-newermt", cutoff_str,   # Select items not modified more recently than the cutoff.
+        "(",
+          "-not", "-type", "d", "-exec", "rm", "{}", ";",
+          "-or",
+          "-exec", "rmdir", "{}", ";",
+        ")"
+    ]
+
+    yield f"Running command: {' '.join(cmd)}"
+
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+        )
+        output_lines = []
+        if process.stdout:
+            for line in process.stdout:
+                line = line.rstrip()
+                output_lines.append(line)
+                yield line
+        process.wait()
+        if process.returncode != 0:
+            yield f"find(1) exited with code {process.returncode}"
+            raise subprocess.CalledProcessError(
+                returncode=process.returncode, cmd=cmd, output="\n".join(output_lines)
+            )
+        else:
+            yield f"find(1) exited with code {process.returncode}"
+    finally:
+        if "process" in locals():
+            # If the process is still running (e.g. because the generator was closed early), kill it.
+            if process.poll() is None:
+                process.kill()
 
 # Start the handler only if this script is run directly
 if __name__ == "__main__":
