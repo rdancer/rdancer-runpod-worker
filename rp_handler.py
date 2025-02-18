@@ -17,6 +17,7 @@ from datetime import datetime
 from tempfile import NamedTemporaryFile
 import re
 import tqdm
+import filecmp
 
 
 class InternalServerError(Exception):
@@ -688,6 +689,28 @@ def rp_upload_image(job_id: str, local_image_path: str, metadata: dict = {}, sto
         finally:
             tqdm.tqdm.update = original_update  # Restore tqdm after execution
 
+    def is_image_uploaded_successfully(local_image_path: str, url: str):
+        """
+        Check the file and URL contents are identical. Uses the `filecmp` library to compare the files.
+
+        Args:
+            local_image_path (str): The path to the image
+            url (str): The URL of the image in the S3 bucket
+        Returns:
+            bool: True if the file and URL contents are identical, False otherwise
+        """
+        # download the file from the url
+        response = requests.get(url)
+        if response.status_code != 200:
+            print(f"Warning: HTTP status code {response.status_code} downloading file from URL: {url} -- {response.text}")
+            return False
+        # save the file to a temporary location
+        with NamedTemporaryFile() as temp_file:
+            temp_file.write(response.content)
+            temp_file.flush()
+            # compare the files
+            return filecmp.cmp(local_image_path, temp_file.name)
+
     try:
         user = metadata["user"]
     except:
@@ -714,18 +737,25 @@ def rp_upload_image(job_id: str, local_image_path: str, metadata: dict = {}, sto
     # This method is simply wrong, so we monkeypatch it in the simplest way possible
     rp_upload.extract_region_from_url = lambda url: AWS_REGION
 
-    # We are getting reports that the images are only partially uploaded.
-    url = my_upload_file_to_bucket(
-        file_name=os.path.basename(local_image_path),
-        file_location=local_image_path,
-        bucket_creds=aws_credentials,
-        bucket_name=AWS_S3_BUCKET,
-        prefix=path_within_bucket,
-        extra_args={
-            "ContentType": guess_mime_type(local_image_path),
-            **({"Metadata": metadata} if store_metadata else {})
-        },
-    )
+    # We are getting reports that the images are still only partially uploaded.
+    max_retries = 10
+    for i in range(max_retries):
+        url = my_upload_file_to_bucket(
+            file_name=os.path.basename(local_image_path),
+            file_location=local_image_path,
+            bucket_creds=aws_credentials,
+            bucket_name=AWS_S3_BUCKET,
+            prefix=path_within_bucket,
+            extra_args={
+                "ContentType": guess_mime_type(local_image_path),
+                **({"Metadata": metadata} if store_metadata else {})
+            },
+        )
+        if is_image_uploaded_successfully(local_image_path, url):
+            break
+        print(f"{worker_name} - Warning: Image {local_image_path} was not uploaded successfully, retrying (attempt {i})...")
+    else:
+        raise Exception(f"Image {local_image_path} was not uploaded successfully after {max_retries} attempts.")
     return url
 
 def upload_png_to_s3(job_id: str, png_data: str, metadata: dict) -> str:
