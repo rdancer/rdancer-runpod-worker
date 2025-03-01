@@ -688,6 +688,26 @@ def rp_upload_image(job_id: str, local_image_path: str, metadata: dict = {}, sto
         finally:
             tqdm.tqdm.update = original_update  # Restore tqdm after execution
 
+    def self_authenticating_file_name(file_name: str) -> str:
+        """
+        Modify the file name so that it contains a random string.
+        This string subsequently becomes a part of the URL, and self-authenticates access.
+        This mimics the use of pre-signed URLs, but unlike the pre-signed URLs which have a max 
+        validity of 7 days, this works indefinitely.
+
+        TODO: Actually make this part of the URL param (after the '?'), not part of the file name proper.
+        """
+        # Split the extension off (if any)
+        base, ext = os.path.splitext(file_name)
+        
+        # Generate random string: create a UUID, compress it using URL-safe Base64 encoding,
+        # and remove any trailing '=' characters.
+        random_bytes = uuid.uuid4().bytes
+        random_string = base64.urlsafe_b64encode(random_bytes).rstrip(b'=').decode('ascii')
+        
+        # Put it all together and return it.
+        return f"{base}_{random_string}{ext}"
+
     try:
         user = metadata["user"]
     except:
