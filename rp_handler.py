@@ -736,7 +736,7 @@ def rp_upload_image(job_id: str, local_image_path: str, metadata: dict = {}, sto
 
     # We are getting reports that the images are only partially uploaded.
     url = my_upload_file_to_bucket(
-        file_name=os.path.basename(local_image_path),
+        file_name=self_authenticating_file_name(os.path.basename(local_image_path)),
         file_location=local_image_path,
         bucket_creds=aws_credentials,
         bucket_name=AWS_S3_BUCKET,
